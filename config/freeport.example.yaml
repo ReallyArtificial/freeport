@@ -1,0 +1,78 @@
+server:
+  host: "0.0.0.0"
+  port: 4000
+
+providers:
+  - name: openai
+    type: openai
+    keys:
+      - key: "${OPENAI_API_KEY}"
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+      - gpt-4-turbo
+      - gpt-3.5-turbo
+
+  # - name: anthropic
+  #   type: anthropic
+  #   keys:
+  #     - key: "${ANTHROPIC_API_KEY}"
+  #   models:
+  #     - claude-sonnet-4-5-20250929
+  #     - claude-3-5-haiku-20241022
+
+  # - name: google
+  #   type: google
+  #   keys:
+  #     - key: "${GOOGLE_API_KEY}"
+  #   models:
+  #     - gemini-2.0-flash
+  #     - gemini-1.5-pro
+
+# Fallback chains: if the first provider fails, try the next
+# fallbackChains:
+#   - name: primary
+#     providers:
+#       - openai
+#       - anthropic
+#       - google
+#     circuitBreaker:
+#       failureThreshold: 3
+#       resetTimeoutMs: 60000
+
+cache:
+  enabled: false
+  similarityThreshold: 0.95
+  maxEntries: 10000
+  ttlSeconds: 3600
+
+rateLimit:
+  enabled: true
+  requestsPerMinute: 60
+  tokensPerMinute: 100000
+
+guardrails:
+  enabled: false
+  piiDetection: true
+  contentFilter: true
+  # maxTokens: 128000
+  # customPlugins:
+  #   - my-plugin.js
+
+abTesting:
+  enabled: false
+
+budget:
+  defaultProjectBudget: 100
+  currency: USD
+  enforcementMode: hard  # hard = reject, warn = log only
+
+logging:
+  level: info
+  requestLogging: true
+
+auth:
+  adminApiKey: "${FREEPORT_ADMIN_API_KEY:-}"
+
+database:
+  path: "./data/freeport.db"
