@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+admin-ui/node_modules/
+
+# Build output
+dist/
+admin-ui/dist/
+
+# Runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Coverage & testing
+coverage/
+.nyc_output/
