@@ -7,17 +7,17 @@ Prompt management, model fallback, semantic caching, cost tracking, guardrails, 
 ## Quick Start
 
 ```bash
-# Clone and configure
-cp config/freeport.example.yaml config/freeport.yaml
-# Edit config/freeport.yaml with your API keys
-
-# Run with Docker
-docker-compose up
-
-# Or run directly
 npm install
-npm run build
-OPENAI_API_KEY=sk-... node dist/index.js
+npm run build:ui   # build the admin dashboard
+npm run dev        # starts on http://localhost:4000
+```
+
+Open `http://localhost:4000/ui/` and add your API keys through the Providers page. No environment variables or config files required to get started.
+
+Alternatively, run with Docker:
+
+```bash
+docker-compose up
 ```
 
 The gateway starts on `http://localhost:4000`. Admin UI at `http://localhost:4000/ui/`.
@@ -187,6 +187,8 @@ providers:
 ### Admin API
 | Method | Path | Description |
 |--------|------|-------------|
+| GET/POST | `/api/providers` | List/create LLM providers |
+| PUT/DELETE | `/api/providers/:id` | Update/delete provider |
 | GET/POST | `/api/prompts` | List/create prompts |
 | GET/PUT/DELETE | `/api/prompts/:id` | Get/update/delete prompt |
 | POST | `/api/prompts/:id/versions` | Create prompt version |
@@ -203,17 +205,36 @@ providers:
 
 ## Configuration
 
-Configuration via YAML file (`config/freeport.yaml`) or environment variables:
+Providers can be configured in three ways (any combination works):
+
+### Option 1: Admin UI (recommended for local dev)
+
+Start the server and open `http://localhost:4000/ui/`. Go to **Providers** and add your API keys. They are stored in the local SQLite database and persist across restarts.
+
+### Option 2: Environment Variables
+
+```bash
+FREEPORT_OPENAI_API_KEY=sk-xxx npm run dev
+```
 
 | Env Var | Description |
 |---------|-------------|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GOOGLE_API_KEY` | Google API key |
+| `FREEPORT_OPENAI_API_KEY` | OpenAI API key |
+| `FREEPORT_ANTHROPIC_API_KEY` | Anthropic API key |
+| `FREEPORT_GOOGLE_API_KEY` | Google API key |
 | `FREEPORT_ADMIN_API_KEY` | Admin API authentication key |
+| `FREEPORT_API_KEY` | Proxy API authentication key |
 | `FREEPORT_PORT` | Server port (default: 4000) |
 | `FREEPORT_HOST` | Server host (default: 0.0.0.0) |
 | `FREEPORT_CONFIG` | Path to config file |
+
+### Option 3: YAML Config File
+
+```bash
+cp config/freeport.example.yaml config/freeport.yaml
+# Edit with your API keys, then:
+npm run dev
+```
 
 YAML values support `${ENV_VAR}` interpolation with `${VAR:-default}` syntax.
 

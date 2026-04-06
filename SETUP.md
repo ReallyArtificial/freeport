@@ -12,17 +12,26 @@
 # 1. Install dependencies
 npm install
 
-# 2. Start the server with at least one provider key
-FREEPORT_OPENAI_API_KEY=sk-your-key npm run dev
+# 2. Build the admin UI
+cd admin-ui && npm install && npm run build && cd ..
+
+# 3. Start the server
+npm run dev
 ```
 
 That's it. The server starts on `http://localhost:4000`.
 
+Open `http://localhost:4000/ui/` and go to **Providers** to add your API keys through the UI. No environment variables or config files needed to get started.
+
 ## Configuration
 
-Freeport loads config from **two sources** (in order of precedence):
+Freeport loads providers from **three sources** (all combine together):
 
-### Option A: Environment Variables (fastest)
+### Option A: Admin UI (easiest)
+
+Just run `npm run dev` and open `http://localhost:4000/ui/`. Go to the **Providers** page and add your API keys. They are stored in the local SQLite database and persist across restarts.
+
+### Option B: Environment Variables
 
 Set one or more provider keys and run:
 
@@ -47,7 +56,7 @@ npm run dev
 | `FREEPORT_PORT` | Server port (default: `4000`) |
 | `FREEPORT_CONFIG` | Path to a YAML config file |
 
-### Option B: YAML Config File
+### Option C: YAML Config File
 
 For full control, create a YAML config. Freeport checks these paths in order:
 
@@ -79,17 +88,23 @@ Then set `OPENAI_API_KEY` in your shell or `.env` file.
 ### Development (with hot reload)
 
 ```bash
-FREEPORT_OPENAI_API_KEY=sk-xxx npm run dev
+npm run dev
 ```
 
-Uses `tsx watch` — restarts automatically on file changes.
+Uses `tsx watch` — restarts automatically on file changes. Add API keys via the admin UI at `http://localhost:4000/ui/`, or pass them as env vars:
+
+```bash
+FREEPORT_OPENAI_API_KEY=sk-xxx npm run dev
+```
 
 ### Production
 
 ```bash
 npm run build
-FREEPORT_OPENAI_API_KEY=sk-xxx npm start
+npm start -- --production
 ```
+
+In production mode, `auth.adminApiKey` and `auth.apiKey` are required. Configure providers via env vars or YAML config.
 
 ### Docker
 
@@ -159,18 +174,6 @@ curl http://localhost:4000/api/logs/stats
 
 ## Troubleshooting
 
-### `Config validation failed: /providers must NOT have fewer than 1 items`
-
-**Cause:** No provider API key is configured. Freeport requires at least one LLM provider.
-
-**Fix:** Set at least one provider key:
-
-```bash
-FREEPORT_OPENAI_API_KEY=sk-your-key npm run dev
-```
-
-Or configure providers in `config/freeport.yaml`.
-
 ### `Route GET:/ui/ not found`
 
 **Cause:** The admin UI hasn't been built. This is expected in dev if you haven't compiled the frontend.
@@ -194,14 +197,12 @@ Then restart the server. Or just ignore it — the proxy and API work without th
 lsof -i :4000
 
 # Or start on a different port
-FREEPORT_PORT=4001 FREEPORT_OPENAI_API_KEY=sk-xxx npm run dev
+FREEPORT_PORT=4001 npm run dev
 ```
 
-### `Error: Required environment variable X is not set`
+### Missing environment variables in YAML config
 
-**Cause:** Your YAML config references `${SOME_VAR}` but the env var isn't set.
-
-**Fix:** Either set the env var or add a default: `${SOME_VAR:-default_value}`.
+If your YAML config references `${SOME_VAR}` and the env var isn't set, the provider is skipped automatically in dev mode. You can add providers through the admin UI instead, or set the env var, or add a default in the YAML: `${SOME_VAR:-default_value}`.
 
 ### `Cannot find module './db/migrations/001_initial.sql'`
 
@@ -237,8 +238,8 @@ src/
   server.ts             Fastify setup + routes
   config/loader.ts      Config loading + validation
   proxy/handler.ts      Main LLM proxy handler
-  providers/            OpenAI, Anthropic, Google adapters
-  admin/routes.ts       Admin API endpoints
+  providers/            OpenAI, Anthropic, Google adapters + runtime manager
+  admin/routes.ts       Admin API endpoints (incl. provider CRUD)
 admin-ui/               Preact dashboard (build separately)
 config/                 YAML config files
 data/                   SQLite database (auto-created)
