@@ -156,7 +156,7 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
   });
 
   // Admin API routes
-  registerAdminRoutes(app, config);
+  registerAdminRoutes(app, config, registry);
 
   // Serve admin UI (must be pre-built via `npm run build:ui`)
   const uiDir = resolve(process.cwd(), 'admin-ui');

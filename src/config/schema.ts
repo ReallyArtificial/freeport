@@ -12,7 +12,6 @@ export const configSchema = {
     },
     providers: {
       type: 'array',
-      minItems: 1,
       items: {
         type: 'object',
         required: ['name', 'type', 'keys'],

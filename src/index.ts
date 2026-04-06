@@ -3,6 +3,7 @@ import { initDb, closeDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/runner.js';
 import { initLogger, getLogger } from './logging/logger.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { loadDbProviderConfigs } from './providers/manager.js';
 import { createServer } from './server.js';
 import { initBuiltinGuardrails, loadCustomPlugins } from './guardrails/engine.js';
 import { initEmbedder } from './cache/embedder.js';
@@ -39,11 +40,20 @@ async function main() {
   const db = initDb(dbPath);
   runMigrations(db);
 
-  // Register providers
+  // Register providers from config file / env vars
   const registry = new ProviderRegistry();
   for (const providerConfig of config.providers) {
     registry.register(providerConfig);
-    log.info({ provider: providerConfig.name, type: providerConfig.type }, 'Registered provider');
+    log.info({ provider: providerConfig.name, type: providerConfig.type }, 'Registered provider (config)');
+  }
+
+  // Register providers from database (added via admin UI)
+  const dbProviders = loadDbProviderConfigs();
+  for (const providerConfig of dbProviders) {
+    if (!registry.get(providerConfig.name)) {
+      registry.register(providerConfig);
+      log.info({ provider: providerConfig.name, type: providerConfig.type }, 'Registered provider (database)');
+    }
   }
 
   // Initialize guardrails
@@ -77,9 +87,21 @@ async function main() {
   const port = config.server.port;
 
   await app.listen({ host, port });
-  log.info({ host, port }, `Freeport Gateway listening on http://${host}:${port}`);
-  log.info(`Admin API: http://${host}:${port}/api/`);
-  log.info(`Health: http://${host}:${port}/health`);
+
+  const displayHost = host === '0.0.0.0' ? 'localhost' : host;
+  log.info({ host, port }, `Freeport Gateway listening on http://${displayHost}:${port}`);
+
+  if (registry.getAll().size === 0) {
+    log.warn('');
+    log.warn('=======================================================');
+    log.warn('  No LLM providers configured!');
+    log.warn(`  Open http://${displayHost}:${port}/ui/ to set up your API keys`);
+    log.warn('=======================================================');
+    log.warn('');
+  } else {
+    log.info(`Admin UI: http://${displayHost}:${port}/ui/`);
+    log.info(`Health: http://${displayHost}:${port}/health`);
+  }
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {

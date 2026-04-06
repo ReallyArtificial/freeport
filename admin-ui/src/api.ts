@@ -76,6 +76,19 @@ export const api = {
   setABTestStatus: (id: string, status: string) =>
     request(`/api/ab-tests/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
 
+  // Providers
+  listProviders: () => request('/api/providers'),
+  createProvider: (data: {
+    name: string; type: string; apiBase?: string;
+    apiKey: string; models?: string[]; enabled?: boolean;
+  }) => request('/api/providers', { method: 'POST', body: JSON.stringify(data) }),
+  updateProvider: (id: string, data: {
+    name?: string; type?: string; apiBase?: string | null;
+    apiKey?: string; models?: string[]; enabled?: boolean;
+  }) => request(`/api/providers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProvider: (id: string) =>
+    request(`/api/providers/${id}`, { method: 'DELETE' }),
+
   // Cache
   clearCache: () => request('/api/system/cache/clear', { method: 'POST' }),
 };

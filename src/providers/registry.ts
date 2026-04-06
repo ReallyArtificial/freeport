@@ -30,6 +30,11 @@ export class ProviderRegistry {
     this.configs.set(config.name, config);
   }
 
+  unregister(name: string): void {
+    this.providers.delete(name);
+    this.configs.delete(name);
+  }
+
   get(name: string): LLMProvider | undefined {
     return this.providers.get(name);
   }

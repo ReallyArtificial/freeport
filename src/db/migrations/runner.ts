@@ -10,6 +10,7 @@ const MIGRATIONS = [
   { version: 2, file: '002_prompts.sql' },
   { version: 3, file: '003_cache.sql' },
   { version: 4, file: '004_ab_tests.sql' },
+  { version: 5, file: '005_providers.sql' },
 ];
 
 export function runMigrations(db: Database.Database): void {

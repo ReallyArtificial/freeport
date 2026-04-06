@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { FreeportConfig } from '../config/types.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import { createAdminAuth } from './auth.js';
 import * as promptManager from '../prompts/manager.js';
 import { resolvePrompt } from '../prompts/resolver.js';
@@ -9,8 +10,12 @@ import { setKillSwitch } from '../budget/enforcer.js';
 import { getActiveTests, getABTestResults } from '../routing/ab-router.js';
 import { clearCache } from '../cache/semantic.js';
 import { getDb } from '../db/connection.js';
+import {
+  listDbProviders, getDbProvider, createDbProvider, updateDbProvider,
+  deleteDbProvider, toProviderConfig,
+} from '../providers/manager.js';
 
-export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig) {
+export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig, registry: ProviderRegistry) {
   const adminAuth = createAdminAuth(config);
 
   app.addHook('onRequest', async (request, reply) => {
@@ -250,18 +255,109 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     },
   );
 
+  // --- Providers ---
+  app.get('/api/providers', async () => {
+    const providers = listDbProviders();
+    // Mask API keys in response — only show prefix
+    return providers.map(p => ({
+      ...p,
+      api_key: p.api_key.slice(0, 8) + '...' + p.api_key.slice(-4),
+      api_key_set: true,
+    }));
+  });
+
+  app.post<{
+    Body: {
+      name: string;
+      type: 'openai' | 'anthropic' | 'google';
+      apiBase?: string;
+      apiKey: string;
+      models?: string[];
+      enabled?: boolean;
+    };
+  }>('/api/providers', async (request, reply) => {
+    const { name, type, apiBase, apiKey, models, enabled } = request.body;
+    if (!name || !type || !apiKey) {
+      return reply.status(400).send({ error: { message: 'name, type, and apiKey are required' } });
+    }
+    if (!['openai', 'anthropic', 'google'].includes(type)) {
+      return reply.status(400).send({ error: { message: 'type must be openai, anthropic, or google' } });
+    }
+    try {
+      const provider = createDbProvider({ name, type, apiBase, apiKey, models, enabled });
+      // Register in the live registry
+      const providerConfig = toProviderConfig(provider);
+      registry.register(providerConfig);
+      return {
+        ...provider,
+        api_key: provider.api_key.slice(0, 8) + '...' + provider.api_key.slice(-4),
+        api_key_set: true,
+      };
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE constraint')) {
+        return reply.status(409).send({ error: { message: `Provider "${name}" already exists` } });
+      }
+      throw err;
+    }
+  });
+
+  app.put<{
+    Params: { id: string };
+    Body: {
+      name?: string;
+      type?: 'openai' | 'anthropic' | 'google';
+      apiBase?: string | null;
+      apiKey?: string;
+      models?: string[];
+      enabled?: boolean;
+    };
+  }>('/api/providers/:id', async (request, reply) => {
+    const existing = getDbProvider(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: { message: 'Provider not found' } });
+    }
+    const updated = updateDbProvider(request.params.id, request.body);
+    if (!updated) {
+      return reply.status(404).send({ error: { message: 'Provider not found' } });
+    }
+    // Re-register in the live registry
+    registry.unregister(existing.name);
+    if (updated.enabled) {
+      registry.register(toProviderConfig(updated));
+    }
+    return {
+      ...updated,
+      api_key: updated.api_key.slice(0, 8) + '...' + updated.api_key.slice(-4),
+      api_key_set: true,
+    };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/providers/:id', async (request, reply) => {
+    const existing = getDbProvider(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: { message: 'Provider not found' } });
+    }
+    deleteDbProvider(request.params.id);
+    registry.unregister(existing.name);
+    return { success: true };
+  });
+
   // --- System ---
   app.get('/api/system/status', async () => {
     const db = getDb();
     const logCount = db.prepare('SELECT COUNT(*) as count FROM request_logs').get() as { count: number };
     const cacheCount = db.prepare('SELECT COUNT(*) as count FROM cache_entries').get() as { count: number };
 
+    // Combine config-based and runtime-registered providers
+    const allProviders = Array.from(registry.getAllConfigs().keys());
+
     return {
       status: 'ok',
       version: '0.1.0',
-      providers: Array.from(new Set(config.providers.map(p => p.name))),
+      providers: allProviders,
       totalLogs: logCount.count,
       cacheEntries: cacheCount.count,
+      needsSetup: allProviders.length === 0,
     };
   });
 

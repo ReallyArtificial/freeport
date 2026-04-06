@@ -196,11 +196,45 @@ const styles = `
   .kv-item:nth-child(odd) { border-right: 1px solid var(--border); }
   .kv-label { color: var(--text-tertiary); font-size: 12px; margin-bottom: 2px; }
   .kv-value { color: var(--text); font-weight: 500; }
+
+  /* Setup banner */
+  .setup-banner {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid #2a3a5e; border-radius: 12px;
+    padding: 32px; margin-bottom: 24px; color: #e0e0e0;
+  }
+  .setup-banner-title {
+    font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 8px;
+    letter-spacing: -0.3px;
+  }
+  .setup-banner-desc { font-size: 13px; color: #a0aec0; margin-bottom: 20px; line-height: 1.5; }
+  .setup-banner .btn-primary { background: #4f6ef7; border-color: #4f6ef7; }
+  .setup-banner .btn-primary:hover { background: #3b5de7; border-color: #3b5de7; }
+
+  /* Provider type badges */
+  .provider-type {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 10px; border-radius: 100px; font-size: 11px;
+    font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase;
+  }
+  .provider-type.openai { background: #e8f5e9; color: #2e7d32; }
+  .provider-type.anthropic { background: #fce4ec; color: #c62828; }
+  .provider-type.google { background: #e3f2fd; color: #1565c0; }
+
+  .key-mask { font-family: var(--mono); font-size: 12px; color: var(--text-tertiary); }
 `;
+
+// ---- Default models per provider type ----
+const DEFAULT_MODELS: Record<string, string[]> = {
+  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  anthropic: ['claude-sonnet-4-5-20250929', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+  google: ['gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+};
 
 // ---- Nav icons (simple text-based) ----
 const icons: Record<string, string> = {
   dashboard: '\u25A0',
+  providers: '\u26A1',
   logs: '\u2261',
   prompts: '\u270E',
   budgets: '\u0024',
@@ -210,7 +244,7 @@ const icons: Record<string, string> = {
 
 // ---- Components ----
 
-function Dashboard() {
+function Dashboard({ onNavigate }: { onNavigate?: (page: string) => void }) {
   const [stats, setStats] = useState<any>(null);
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -226,6 +260,19 @@ function Dashboard() {
 
   return (
     <div>
+      {status?.needsSetup && (
+        <div class="setup-banner">
+          <div class="setup-banner-title">Welcome to Freeport</div>
+          <div class="setup-banner-desc">
+            No LLM providers configured yet. Add your API keys to start proxying requests
+            to OpenAI, Anthropic, or Google.
+          </div>
+          <button class="btn btn-primary" onClick={() => onNavigate?.('providers')}>
+            Set Up Providers
+          </button>
+        </div>
+      )}
+
       <div class="page-header">
         <div>
           <h2 class="page-title">Overview</h2>
@@ -297,6 +344,167 @@ function Dashboard() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Providers() {
+  const [providers, setProviders] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({
+    name: '', type: 'openai', apiBase: '', apiKey: '', models: '', enabled: true,
+  });
+
+  const load = () => {
+    api.listProviders()
+      .then(setProviders)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const resetForm = () => setForm({
+    name: '', type: 'openai', apiBase: '', apiKey: '', models: '', enabled: true,
+  });
+
+  const prefillName = (type: string) => {
+    setForm(f => ({
+      ...f,
+      type,
+      name: f.name || type,
+      models: DEFAULT_MODELS[type]?.join(', ') ?? '',
+    }));
+  };
+
+  const create = () => {
+    setError('');
+    const models = form.models
+      ? form.models.split(',').map((s: string) => s.trim()).filter(Boolean)
+      : undefined;
+    api.createProvider({
+      name: form.name,
+      type: form.type,
+      apiBase: form.apiBase || undefined,
+      apiKey: form.apiKey,
+      models,
+      enabled: form.enabled,
+    }).then(() => {
+      setShowCreate(false);
+      resetForm();
+      load();
+    }).catch((err: any) => setError(err.message));
+  };
+
+  const remove = (id: string, name: string) => {
+    if (!confirm(`Remove provider "${name}"?`)) return;
+    api.deleteProvider(id).then(load);
+  };
+
+  const toggle = (p: any) => {
+    api.updateProvider(p.id, { enabled: !p.enabled }).then(load);
+  };
+
+  return (
+    <div>
+      <div class="page-header">
+        <div>
+          <h2 class="page-title">Providers</h2>
+          <p class="page-desc">Configure LLM provider API keys</p>
+        </div>
+        <button class="btn btn-primary" onClick={() => setShowCreate(true)}>Add Provider</button>
+      </div>
+
+      {providers.length === 0 && !loading ? (
+        <div class="setup-banner">
+          <div class="setup-banner-title">Add your first provider</div>
+          <div class="setup-banner-desc">
+            Freeport acts as an LLM gateway. You need at least one provider to proxy requests.
+            Click below to add your OpenAI, Anthropic, or Google API key.
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onClick={() => { resetForm(); prefillName('openai'); setShowCreate(true); }}>
+              Add OpenAI
+            </button>
+            <button class="btn" style="border-color:#a0aec0;color:#fff" onClick={() => { resetForm(); prefillName('anthropic'); setShowCreate(true); }}>
+              Add Anthropic
+            </button>
+            <button class="btn" style="border-color:#a0aec0;color:#fff" onClick={() => { resetForm(); prefillName('google'); setShowCreate(true); }}>
+              Add Google
+            </button>
+          </div>
+        </div>
+      ) : loading ? (
+        <div class="empty">Loading...</div>
+      ) : (
+        <div class="card" style="padding:0; overflow:hidden">
+          <table>
+            <thead>
+              <tr><th>Provider</th><th>Type</th><th>API Key</th><th>Models</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+              {providers.map((p: any) => (
+                <tr key={p.id}>
+                  <td style="color:var(--text); font-weight:500">{p.name}</td>
+                  <td><span class={`provider-type ${p.type}`}>{p.type}</span></td>
+                  <td><span class="key-mask">{p.api_key}</span></td>
+                  <td style="max-width:200px">
+                    <span class="mono" style="font-size:11px; color:var(--text-secondary)">
+                      {p.models ? JSON.parse(p.models).join(', ') : 'default'}
+                    </span>
+                  </td>
+                  <td>
+                    <span class={`badge ${p.enabled ? 'badge-green' : 'badge-gray'}`} style="cursor:pointer" onClick={() => toggle(p)}>
+                      <span class="badge-dot" /> {p.enabled ? 'Active' : 'Disabled'}
+                    </span>
+                  </td>
+                  <td style="text-align:right">
+                    <button class="btn btn-danger btn-sm" onClick={() => remove(p.id, p.name)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showCreate && (
+        <div class="modal-overlay" onClick={() => { setShowCreate(false); setError(''); }}>
+          <div class="modal" onClick={(e: any) => e.stopPropagation()}>
+            <div class="modal-title">Add Provider</div>
+            {error && <div style="color:var(--danger); font-size:13px; margin-bottom:12px">{error}</div>}
+            <div class="form-group">
+              <label class="form-label">Type</label>
+              <select class="input" value={form.type} onChange={(e: any) => { prefillName(e.target.value); }}>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Name</label>
+              <input class="input" value={form.name} onInput={(e: any) => setForm({ ...form, name: e.target.value })} placeholder="e.g. openai" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">API Key</label>
+              <input class="input" type="password" value={form.apiKey} onInput={(e: any) => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." />
+            </div>
+            <div class="form-group">
+              <label class="form-label">API Base URL <span style="color:var(--text-tertiary)">(optional)</span></label>
+              <input class="input" value={form.apiBase} onInput={(e: any) => setForm({ ...form, apiBase: e.target.value })} placeholder="Leave blank for default" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Models <span style="color:var(--text-tertiary)">(comma-separated)</span></label>
+              <input class="input" value={form.models} onInput={(e: any) => setForm({ ...form, models: e.target.value })} placeholder="gpt-4o, gpt-4o-mini" />
+            </div>
+            <div class="btn-group mt-4" style="justify-content:flex-end">
+              <button class="btn" onClick={() => { setShowCreate(false); setError(''); }}>Cancel</button>
+              <button class="btn btn-primary" onClick={create} disabled={!form.name || !form.apiKey}>Add Provider</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -735,18 +943,19 @@ function Settings() {
 
 // ---- Main App ----
 
-type Page = 'dashboard' | 'logs' | 'prompts' | 'budgets' | 'ab-tests' | 'settings';
+type Page = 'dashboard' | 'providers' | 'logs' | 'prompts' | 'budgets' | 'ab-tests' | 'settings';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
 
-  const pages: Record<Page, { label: string; component: () => any }> = {
-    dashboard: { label: 'Overview', component: Dashboard },
-    logs: { label: 'Logs', component: Logs },
-    prompts: { label: 'Prompts', component: Prompts },
-    budgets: { label: 'Budgets', component: Budgets },
-    'ab-tests': { label: 'Experiments', component: ABTests },
-    settings: { label: 'Settings', component: Settings },
+  const pages: Record<Page, { label: string; component: (props: { onNavigate: (p: string) => void }) => any }> = {
+    dashboard: { label: 'Overview', component: ({ onNavigate }) => <Dashboard onNavigate={onNavigate} /> },
+    providers: { label: 'Providers', component: () => <Providers /> },
+    logs: { label: 'Logs', component: () => <Logs /> },
+    prompts: { label: 'Prompts', component: () => <Prompts /> },
+    budgets: { label: 'Budgets', component: () => <Budgets /> },
+    'ab-tests': { label: 'Experiments', component: () => <ABTests /> },
+    settings: { label: 'Settings', component: () => <Settings /> },
   };
 
   const CurrentPage = pages[page].component;
@@ -777,7 +986,7 @@ function App() {
           </div>
         </nav>
         <main class="main">
-          <CurrentPage />
+          <CurrentPage onNavigate={(p: string) => setPage(p as Page)} />
         </main>
       </div>
     </>

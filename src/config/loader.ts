@@ -14,7 +14,10 @@ function interpolateEnvVars(text: string): string {
     const value = process.env[varName.trim()];
     if (value !== undefined) return value;
     if (defaultVal !== undefined) return defaultVal;
-    throw new Error(`Environment variable ${varName.trim()} is not set and has no default`);
+    // Return empty string instead of crashing — allows server to start
+    // without every env var pre-configured. Providers with empty keys
+    // will simply not work until configured via the admin UI.
+    return '';
   });
 }
 
@@ -90,6 +93,16 @@ export function loadConfig(configPath?: string): FreeportConfig {
   if (rawContent && resolvedPath) {
     const interpolated = interpolateEnvVars(rawContent);
     parsed = parseYaml(interpolated) as Record<string, unknown>;
+
+    // Filter out providers whose API keys resolved to empty strings
+    // (env vars not set). They can be configured later via the admin UI.
+    if (Array.isArray(parsed.providers)) {
+      parsed.providers = (parsed.providers as Array<Record<string, unknown>>).filter(p => {
+        const keys = p.keys as Array<Record<string, unknown>> | undefined;
+        if (!keys || keys.length === 0) return false;
+        return keys.some(k => typeof k.key === 'string' && k.key.length > 0);
+      });
+    }
   } else {
     // Build config from env vars only
     parsed = buildConfigFromEnv();

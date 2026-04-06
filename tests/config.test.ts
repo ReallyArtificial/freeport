@@ -51,12 +51,14 @@ describe('Config Loader', () => {
     expect(names).toContain('google');
   });
 
-  it('throws on invalid config', () => {
-    // No providers at all
+  it('allows zero providers for local dev setup', () => {
+    // No providers — server should still start (providers added via UI)
     delete process.env.FREEPORT_OPENAI_API_KEY;
     delete process.env.FREEPORT_ANTHROPIC_API_KEY;
     delete process.env.FREEPORT_GOOGLE_API_KEY;
 
-    expect(() => loadConfig('/nonexistent/path.yaml')).toThrow('Config validation failed');
+    const config = loadConfig('/nonexistent/path.yaml');
+    expect(config.providers).toHaveLength(0);
+    expect(config.server.port).toBe(4000);
   });
 });
