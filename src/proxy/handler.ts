@@ -22,10 +22,14 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
       const completionReq = normalizeRequest(body);
       const metadata = extractFreeportMetadata(body);
 
+      // Read freeport context from API key auth (if present)
+      const freeportCtx = (request as any).freeportContext as
+        { projectId?: string; apiKeyId?: string } | undefined;
+
       // Build pipeline context
       const context: PipelineContext = {
         request: completionReq,
-        projectId: metadata.projectId,
+        projectId: metadata.projectId || freeportCtx?.projectId,
         promptSlug: metadata.promptSlug,
         promptVersion: metadata.promptVersion,
         promptVariables: metadata.promptVariables,
@@ -88,6 +92,15 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
         return reply.header('X-Cache', 'HIT').header('X-Cache-Similarity', String(cached.similarity)).send(cachedResponse);
       }
 
+      // Snapshot the resolved request for logging (after prompt resolution, guardrails, etc.)
+      const resolvedRequestBody = JSON.stringify({
+        model: completionReq.model,
+        messages: completionReq.messages,
+        ...(completionReq.temperature !== undefined && { temperature: completionReq.temperature }),
+        ...(completionReq.max_tokens !== undefined && { max_tokens: completionReq.max_tokens }),
+        ...(completionReq.stream && { stream: completionReq.stream }),
+      });
+
       // Route to provider
       const isStreaming = completionReq.stream === true;
 
@@ -116,6 +129,8 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
             latencyMs,
             isCached: false,
             isFallback: chain.providers.length > 1,
+            rawRequestBody: resolvedRequestBody,
+            rawResponseBody: fullContent,
           });
         } catch (err) {
           log.error({ err }, 'Post-process failed for streaming request');
@@ -198,10 +213,9 @@ function findChain(
   config: FreeportConfig,
   registry: ProviderRegistry,
 ): FallbackChainConfig {
-  // Check explicit fallback chains
+  // Check explicit fallback chains from config
   if (config.fallbackChains) {
     for (const chain of config.fallbackChains) {
-      // Check if any provider in the chain serves this model
       for (const providerName of chain.providers) {
         const providerConfig = registry.getConfig(providerName);
         if (providerConfig?.models?.includes(model)) {
@@ -209,6 +223,34 @@ function findChain(
         }
       }
     }
+  }
+
+  // Check database fallback chains
+  try {
+    const { getDb } = require('../db/connection.js');
+    const db = getDb();
+    const dbChains = db.prepare(
+      'SELECT * FROM fallback_chains WHERE enabled = 1 ORDER BY created_at ASC'
+    ).all() as Array<Record<string, unknown>>;
+
+    for (const dbChain of dbChains) {
+      const providers = JSON.parse(dbChain.provider_order as string) as string[];
+      for (const providerName of providers) {
+        const providerConfig = registry.getConfig(providerName);
+        if (providerConfig?.models?.includes(model)) {
+          return {
+            name: dbChain.name as string,
+            providers,
+            circuitBreaker: {
+              failureThreshold: dbChain.failure_threshold as number,
+              resetTimeoutMs: dbChain.reset_timeout_ms as number,
+            },
+          };
+        }
+      }
+    }
+  } catch {
+    // DB not ready or table doesn't exist yet — skip
   }
 
   // Default: single-provider chain

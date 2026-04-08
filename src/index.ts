@@ -40,6 +40,22 @@ async function main() {
   const db = initDb(dbPath);
   runMigrations(db);
 
+  // Load runtime config overrides from database
+  try {
+    const rtRows = db.prepare('SELECT key, value FROM runtime_config').all() as Array<{ key: string; value: string }>;
+    for (const row of rtRows) {
+      try {
+        const parsed = JSON.parse(row.value);
+        if (row.key === 'cache' && parsed) Object.assign(config.cache ??= { enabled: false }, parsed);
+        if (row.key === 'rateLimit' && parsed) Object.assign(config.rateLimit ??= { enabled: false }, parsed);
+        if (row.key === 'guardrails' && parsed) Object.assign(config.guardrails ??= { enabled: false }, parsed);
+      } catch { /* skip malformed entries */ }
+    }
+    if (rtRows.length > 0) log.info(`Loaded ${rtRows.length} runtime config overrides`);
+  } catch {
+    // runtime_config table may not exist yet (pre-migration 6)
+  }
+
   // Register providers from config file / env vars
   const registry = new ProviderRegistry();
   for (const providerConfig of config.providers) {

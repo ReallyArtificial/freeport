@@ -11,6 +11,7 @@ const MIGRATIONS = [
   { version: 3, file: '003_cache.sql' },
   { version: 4, file: '004_ab_tests.sql' },
   { version: 5, file: '005_providers.sql' },
+  { version: 6, file: '006_fallback_chains.sql' },
 ];
 
 export function runMigrations(db: Database.Database): void {

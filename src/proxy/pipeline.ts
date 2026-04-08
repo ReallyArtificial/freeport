@@ -95,7 +95,11 @@ export async function preProcess(context: PipelineContext): Promise<PreProcessRe
         version: resolved.version,
       }, 'Prompt resolved');
     } catch (err) {
-      log.warn({ err, prompt: context.promptSlug }, 'Prompt resolution failed');
+      // If the user explicitly asked for a managed prompt, fail loudly
+      throw Object.assign(
+        new Error(`Prompt resolution failed for "${context.promptSlug}": ${(err as Error).message}`),
+        { statusCode: 400, code: 'PROMPT_RESOLUTION_FAILED' },
+      );
     }
   }
 

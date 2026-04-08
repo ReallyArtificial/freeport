@@ -39,15 +39,16 @@ export function getProjectSpend(projectId: string): {
   dailySpent: number;
   monthlyLimit: number | null;
   dailyLimit: number | null;
+  isKilled: boolean;
 } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT monthly_spent, daily_spent, monthly_limit, daily_limit
+    SELECT monthly_spent, daily_spent, monthly_limit, daily_limit, is_killed
     FROM budgets WHERE project_id = ?
   `).get(projectId) as Record<string, unknown> | undefined;
 
   if (!row) {
-    return { monthlySpent: 0, dailySpent: 0, monthlyLimit: null, dailyLimit: null };
+    return { monthlySpent: 0, dailySpent: 0, monthlyLimit: null, dailyLimit: null, isKilled: false };
   }
 
   return {
@@ -55,6 +56,7 @@ export function getProjectSpend(projectId: string): {
     dailySpent: row.daily_spent as number,
     monthlyLimit: row.monthly_limit as number | null,
     dailyLimit: row.daily_limit as number | null,
+    isKilled: !!(row.is_killed as number),
   };
 }
 

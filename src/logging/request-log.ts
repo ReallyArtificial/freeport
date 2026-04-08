@@ -98,6 +98,7 @@ export function queryLogs(opts: {
     isCached: row.is_cached === 1,
     isFallback: row.is_fallback === 1,
     error: row.error as string | undefined,
+    createdAt: row.created_at as string,
     metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
   }));
 }

@@ -1,12 +1,11 @@
 const BASE = '';
 
 async function request(path: string, opts?: RequestInit) {
+  const headers: Record<string, string> = { ...opts?.headers as Record<string, string> };
+  if (opts?.body) headers['Content-Type'] = 'application/json';
   const res = await fetch(`${BASE}${path}`, {
     ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      ...opts?.headers,
-    },
+    headers,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
@@ -88,7 +87,40 @@ export const api = {
   }) => request(`/api/providers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProvider: (id: string) =>
     request(`/api/providers/${id}`, { method: 'DELETE' }),
+  testProvider: (id: string) =>
+    request(`/api/providers/${id}/test`, { method: 'POST', body: '{}' }),
 
   // Cache
   clearCache: () => request('/api/system/cache/clear', { method: 'POST' }),
+
+  // API Keys
+  listApiKeys: () => request('/api/api-keys'),
+  createApiKey: (data: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number }) =>
+    request('/api/api-keys', { method: 'POST', body: JSON.stringify(data) }),
+  revokeApiKey: (id: string) =>
+    request(`/api/api-keys/${id}/revoke`, { method: 'PUT', body: '{}' }),
+  activateApiKey: (id: string) =>
+    request(`/api/api-keys/${id}/activate`, { method: 'PUT', body: '{}' }),
+  deleteApiKey: (id: string) =>
+    request(`/api/api-keys/${id}`, { method: 'DELETE' }),
+
+  // Fallback Chains
+  listFallbackChains: () => request('/api/fallback-chains'),
+  createFallbackChain: (data: {
+    name: string; providers: string[]; failureThreshold?: number; resetTimeoutMs?: number;
+  }) => request('/api/fallback-chains', { method: 'POST', body: JSON.stringify(data) }),
+  updateFallbackChain: (id: string, data: {
+    name?: string; providers?: string[]; failureThreshold?: number;
+    resetTimeoutMs?: number; enabled?: boolean;
+  }) => request(`/api/fallback-chains/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteFallbackChain: (id: string) =>
+    request(`/api/fallback-chains/${id}`, { method: 'DELETE' }),
+
+  // Settings
+  getSettings: () => request('/api/settings'),
+  updateSettings: (data: {
+    cache?: { enabled?: boolean; similarityThreshold?: number; maxEntries?: number; ttlSeconds?: number };
+    rateLimit?: { enabled?: boolean; requestsPerMinute?: number; tokensPerMinute?: number };
+    guardrails?: { enabled?: boolean; piiDetection?: boolean; contentFilter?: boolean; maxTokens?: number };
+  }) => request('/api/settings', { method: 'PUT', body: JSON.stringify(data) }),
 };

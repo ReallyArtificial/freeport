@@ -14,6 +14,9 @@ import {
   listDbProviders, getDbProvider, createDbProvider, updateDbProvider,
   deleteDbProvider, toProviderConfig,
 } from '../providers/manager.js';
+import {
+  createApiKey, listApiKeys, revokeApiKey, activateApiKey, deleteApiKey,
+} from './api-keys.js';
 
 export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig, registry: ProviderRegistry) {
   const adminAuth = createAdminAuth(config);
@@ -178,7 +181,12 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
 
   // --- A/B Tests ---
   app.get('/api/ab-tests', async () => {
-    return getActiveTests();
+    const db = getDb();
+    const tests = db.prepare('SELECT * FROM ab_tests ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
+    return tests.map(test => {
+      const variants = db.prepare('SELECT * FROM ab_test_variants WHERE test_id = ?').all(test.id as string);
+      return { ...test, variants };
+    });
   });
 
   app.post<{
@@ -339,6 +347,247 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     }
     deleteDbProvider(request.params.id);
     registry.unregister(existing.name);
+    return { success: true };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/providers/:id/test', async (request, reply) => {
+    const provider = getDbProvider(request.params.id);
+    if (!provider) {
+      return reply.status(404).send({ error: { message: 'Provider not found' } });
+    }
+
+    const start = performance.now();
+    try {
+      if (provider.type === 'openai') {
+        const base = provider.api_base || 'https://api.openai.com';
+        const res = await fetch(`${base}/v1/models`, {
+          headers: { 'Authorization': `Bearer ${provider.api_key}` },
+        });
+        const body = await res.json() as Record<string, unknown>;
+        if (!res.ok) {
+          const err = body as { error?: { message?: string } };
+          return { success: false, error: err.error?.message ?? `HTTP ${res.status}`, latencyMs: Math.round(performance.now() - start) };
+        }
+        const models = (body.data as Array<{ id: string }> | undefined) ?? [];
+        return { success: true, latencyMs: Math.round(performance.now() - start), models: models.slice(0, 10).map((m: any) => m.id) };
+
+      } else if (provider.type === 'anthropic') {
+        const base = provider.api_base || 'https://api.anthropic.com';
+        const res = await fetch(`${base}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'x-api-key': provider.api_key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'claude-3-5-haiku-20241022',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'Hi' }],
+          }),
+        });
+        const body = await res.json() as Record<string, unknown>;
+        if (!res.ok) {
+          const err = body as { error?: { message?: string } };
+          return { success: false, error: err.error?.message ?? `HTTP ${res.status}`, latencyMs: Math.round(performance.now() - start) };
+        }
+        return { success: true, latencyMs: Math.round(performance.now() - start), model: body.model };
+
+      } else if (provider.type === 'google') {
+        const base = provider.api_base || 'https://generativelanguage.googleapis.com';
+        const res = await fetch(`${base}/v1beta/models?key=${provider.api_key}`);
+        const body = await res.json() as Record<string, unknown>;
+        if (!res.ok) {
+          const err = body as { error?: { message?: string } };
+          return { success: false, error: err.error?.message ?? `HTTP ${res.status}`, latencyMs: Math.round(performance.now() - start) };
+        }
+        const models = (body.models as Array<{ name: string }> | undefined) ?? [];
+        return { success: true, latencyMs: Math.round(performance.now() - start), models: models.slice(0, 10).map((m: any) => m.name) };
+
+      } else {
+        return reply.status(400).send({ error: { message: `Unknown provider type: ${provider.type}` } });
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message ?? 'Connection failed', latencyMs: Math.round(performance.now() - start) };
+    }
+  });
+
+  // --- API Keys ---
+  app.get('/api/api-keys', async () => {
+    return listApiKeys();
+  });
+
+  app.post<{
+    Body: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number };
+  }>('/api/api-keys', async (request, reply) => {
+    if (!request.body.name) {
+      return reply.status(400).send({ error: { message: 'name is required' } });
+    }
+    const result = createApiKey(request.body);
+    return { key: result.key, plainTextKey: result.plainTextKey };
+  });
+
+  app.put<{ Params: { id: string } }>(
+    '/api/api-keys/:id/revoke',
+    async (request) => {
+      revokeApiKey(request.params.id);
+      return { success: true };
+    },
+  );
+
+  app.put<{ Params: { id: string } }>(
+    '/api/api-keys/:id/activate',
+    async (request) => {
+      activateApiKey(request.params.id);
+      return { success: true };
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/api-keys/:id',
+    async (request) => {
+      deleteApiKey(request.params.id);
+      return { success: true };
+    },
+  );
+
+  // --- Fallback Chains ---
+  app.get('/api/fallback-chains', async () => {
+    const db = getDb();
+    return db.prepare('SELECT * FROM fallback_chains ORDER BY created_at DESC').all();
+  });
+
+  app.post<{
+    Body: {
+      name: string;
+      providers: string[];
+      failureThreshold?: number;
+      resetTimeoutMs?: number;
+    };
+  }>('/api/fallback-chains', async (request, reply) => {
+    const { name, providers, failureThreshold, resetTimeoutMs } = request.body;
+    if (!name || !providers?.length) {
+      return reply.status(400).send({ error: { message: 'name and providers are required' } });
+    }
+    const db = getDb();
+    try {
+      const row = db.prepare(`
+        INSERT INTO fallback_chains (name, provider_order, failure_threshold, reset_timeout_ms)
+        VALUES (?, ?, ?, ?)
+        RETURNING *
+      `).get(
+        name,
+        JSON.stringify(providers),
+        failureThreshold ?? 3,
+        resetTimeoutMs ?? 60000,
+      ) as Record<string, unknown>;
+      return row;
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE constraint')) {
+        return reply.status(409).send({ error: { message: `Chain "${name}" already exists` } });
+      }
+      throw err;
+    }
+  });
+
+  app.put<{
+    Params: { id: string };
+    Body: {
+      name?: string;
+      providers?: string[];
+      failureThreshold?: number;
+      resetTimeoutMs?: number;
+      enabled?: boolean;
+    };
+  }>('/api/fallback-chains/:id', async (request, reply) => {
+    const db = getDb();
+    const existing = db.prepare('SELECT * FROM fallback_chains WHERE id = ?').get(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: { message: 'Fallback chain not found' } });
+    }
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const { name, providers, failureThreshold, resetTimeoutMs, enabled } = request.body;
+    if (name !== undefined) { sets.push('name = ?'); vals.push(name); }
+    if (providers !== undefined) { sets.push('provider_order = ?'); vals.push(JSON.stringify(providers)); }
+    if (failureThreshold !== undefined) { sets.push('failure_threshold = ?'); vals.push(failureThreshold); }
+    if (resetTimeoutMs !== undefined) { sets.push('reset_timeout_ms = ?'); vals.push(resetTimeoutMs); }
+    if (enabled !== undefined) { sets.push('enabled = ?'); vals.push(enabled ? 1 : 0); }
+    if (sets.length === 0) return { success: true };
+    sets.push("updated_at = datetime('now')");
+    vals.push(request.params.id);
+    db.prepare(`UPDATE fallback_chains SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    return db.prepare('SELECT * FROM fallback_chains WHERE id = ?').get(request.params.id);
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/fallback-chains/:id', async (request, reply) => {
+    const db = getDb();
+    const existing = db.prepare('SELECT * FROM fallback_chains WHERE id = ?').get(request.params.id);
+    if (!existing) {
+      return reply.status(404).send({ error: { message: 'Fallback chain not found' } });
+    }
+    db.prepare('DELETE FROM fallback_chains WHERE id = ?').run(request.params.id);
+    return { success: true };
+  });
+
+  // --- Settings ---
+  app.get('/api/settings', async () => {
+    return {
+      cache: {
+        enabled: config.cache?.enabled ?? false,
+        similarityThreshold: config.cache?.similarityThreshold ?? 0.95,
+        maxEntries: config.cache?.maxEntries ?? 10000,
+        ttlSeconds: config.cache?.ttlSeconds ?? 3600,
+      },
+      rateLimit: {
+        enabled: config.rateLimit?.enabled ?? false,
+        requestsPerMinute: config.rateLimit?.requestsPerMinute ?? 60,
+        tokensPerMinute: config.rateLimit?.tokensPerMinute ?? 100000,
+      },
+      guardrails: {
+        enabled: config.guardrails?.enabled ?? false,
+        piiDetection: config.guardrails?.piiDetection ?? false,
+        contentFilter: config.guardrails?.contentFilter ?? false,
+        maxTokens: config.guardrails?.maxTokens ?? 4096,
+      },
+    };
+  });
+
+  app.put<{
+    Body: {
+      cache?: { enabled?: boolean; similarityThreshold?: number; maxEntries?: number; ttlSeconds?: number };
+      rateLimit?: { enabled?: boolean; requestsPerMinute?: number; tokensPerMinute?: number };
+      guardrails?: { enabled?: boolean; piiDetection?: boolean; contentFilter?: boolean; maxTokens?: number };
+    };
+  }>('/api/settings', async (request) => {
+    const db = getDb();
+    const { cache, rateLimit, guardrails } = request.body;
+
+    // Update in-memory config
+    if (cache) {
+      if (!config.cache) config.cache = { enabled: false };
+      Object.assign(config.cache, cache);
+    }
+    if (rateLimit) {
+      if (!config.rateLimit) config.rateLimit = { enabled: false };
+      Object.assign(config.rateLimit, rateLimit);
+    }
+    if (guardrails) {
+      if (!config.guardrails) config.guardrails = { enabled: false };
+      Object.assign(config.guardrails, guardrails);
+    }
+
+    // Persist to runtime_config table
+    const upsert = db.prepare(`
+      INSERT INTO runtime_config (key, value, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `);
+
+    if (cache) upsert.run('cache', JSON.stringify(config.cache));
+    if (rateLimit) upsert.run('rateLimit', JSON.stringify(config.rateLimit));
+    if (guardrails) upsert.run('guardrails', JSON.stringify(config.guardrails));
+
     return { success: true };
   });
 

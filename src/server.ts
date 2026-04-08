@@ -67,19 +67,40 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
     };
   });
 
-  // Proxy auth — if FREEPORT_API_KEY / auth.apiKey is set, require it on proxy routes
+  // Proxy auth — supports both FREEPORT_API_KEY and fport_ database keys
   const proxyApiKey = config.auth?.apiKey;
-  if (proxyApiKey) {
-    const { createHash, timingSafeEqual } = await import('node:crypto');
-    app.addHook('onRequest', async (request, reply) => {
-      if (!request.url.startsWith('/v1/')) return;
-      const authHeader = request.headers.authorization;
-      if (!authHeader) {
+  const { createHash, timingSafeEqual } = await import('node:crypto');
+  const { validateApiKey } = await import('./admin/api-keys.js');
+
+  app.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/v1/')) return;
+    const authHeader = request.headers.authorization;
+    if (!authHeader) {
+      if (!proxyApiKey) return; // No auth configured, allow through
+      return reply.status(401).send({
+        error: { message: 'Missing Authorization header. Use: Authorization: Bearer <API_KEY>', type: 'auth_error' },
+      });
+    }
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+
+    // Check for fport_ database keys first
+    if (token.startsWith('fport_')) {
+      const apiKeyRow = validateApiKey(token);
+      if (!apiKeyRow) {
         return reply.status(401).send({
-          error: { message: 'Missing Authorization header. Use: Authorization: Bearer <FREEPORT_API_KEY>', type: 'auth_error' },
+          error: { message: 'Invalid or revoked API key', type: 'auth_error' },
         });
       }
-      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+      // Attach context to request for downstream use
+      (request as any).freeportContext = {
+        projectId: apiKeyRow.project_id,
+        apiKeyId: apiKeyRow.id,
+      };
+      return;
+    }
+
+    // Fall back to static FREEPORT_API_KEY check
+    if (proxyApiKey) {
       const hashA = createHash('sha256').update(token).digest();
       const hashB = createHash('sha256').update(proxyApiKey).digest();
       if (!timingSafeEqual(hashA, hashB)) {
@@ -87,10 +108,13 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
           error: { message: 'Invalid API key', type: 'auth_error' },
         });
       }
-    });
-    log.info('Proxy API key authentication enabled');
+    }
+  });
+
+  if (proxyApiKey) {
+    log.info('Proxy API key authentication enabled (static + database keys)');
   } else {
-    log.warn('No auth.apiKey configured — proxy routes are unauthenticated. Set FREEPORT_API_KEY for production.');
+    log.info('Proxy authentication: database API keys only (no static FREEPORT_API_KEY)');
   }
 
   // Proxy routes (OpenAI-compatible)

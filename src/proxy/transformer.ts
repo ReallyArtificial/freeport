@@ -39,6 +39,20 @@ export function normalizeRequest(body: Record<string, unknown>): CompletionReque
     };
   }
 
+  // Managed prompt mode — no messages needed, prompt resolver will fill them in
+  const freeportMeta = (body.freeport ?? body.metadata) as Record<string, unknown> | undefined;
+  if (freeportMeta?.prompt) {
+    return {
+      model: body.model as string,
+      messages: [{ role: 'user', content: '' }],
+      temperature: body.temperature as number | undefined,
+      max_tokens: body.max_tokens as number | undefined,
+      top_p: body.top_p as number | undefined,
+      stream: body.stream as boolean | undefined,
+      stop: body.stop as string | string[] | undefined,
+    };
+  }
+
   throw new Error('Request must include either "messages" or "prompt" field');
 }
 
