@@ -5,10 +5,13 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "preinstall": "node scripts/check-node.js",
+    "postinstall": "cd admin-ui && npm install --no-audit --no-fund 2>/dev/null || true",
+    "setup": "npm install && npm run build:ui && echo '\n  Ready! Run: npm run dev\n'",
     "build": "tsc && cp src/db/migrations/*.sql dist/db/migrations/",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "build:ui": "cd admin-ui && npm run build",
+    "build:ui": "cd admin-ui && npm install --no-audit --no-fund && npm run build",
     "lint": "eslint src/",
     "test": "vitest run"
   },
@@ -23,7 +26,6 @@
     "better-sqlite3": "^11.8.1",
     "fastify": "^5.2.1",
     "pino": "^9.6.0",
-    "undici": "^7.3.0",
     "yaml": "^2.7.0"
   },
   "devDependencies": {
