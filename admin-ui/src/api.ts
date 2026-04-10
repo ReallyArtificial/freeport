@@ -68,6 +68,7 @@ export const api = {
   // A/B Tests
   listABTests: () => request('/api/ab-tests'),
   getABTest: (id: string) => request(`/api/ab-tests/${id}`),
+  getABTestAnalysis: (id: string) => request(`/api/ab-tests/${id}/analysis`),
   createABTest: (data: { name: string; description?: string }) =>
     request('/api/ab-tests', { method: 'POST', body: JSON.stringify(data) }),
   addVariant: (testId: string, data: { name: string; promptId?: string; model?: string; weight?: number }) =>
@@ -89,13 +90,14 @@ export const api = {
     request(`/api/providers/${id}`, { method: 'DELETE' }),
   testProvider: (id: string) =>
     request(`/api/providers/${id}/test`, { method: 'POST', body: '{}' }),
+  getProviderHealth: () => request('/api/providers/health'),
 
   // Cache
   clearCache: () => request('/api/system/cache/clear', { method: 'POST' }),
 
   // API Keys
   listApiKeys: () => request('/api/api-keys'),
-  createApiKey: (data: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number }) =>
+  createApiKey: (data: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number; scopes?: string; expiresAt?: string }) =>
     request('/api/api-keys', { method: 'POST', body: JSON.stringify(data) }),
   revokeApiKey: (id: string) =>
     request(`/api/api-keys/${id}/revoke`, { method: 'PUT', body: '{}' }),
@@ -103,6 +105,8 @@ export const api = {
     request(`/api/api-keys/${id}/activate`, { method: 'PUT', body: '{}' }),
   deleteApiKey: (id: string) =>
     request(`/api/api-keys/${id}`, { method: 'DELETE' }),
+  rotateApiKey: (id: string) =>
+    request(`/api/api-keys/${id}/rotate`, { method: 'POST', body: '{}' }),
 
   // Fallback Chains
   listFallbackChains: () => request('/api/fallback-chains'),
@@ -123,4 +127,10 @@ export const api = {
     rateLimit?: { enabled?: boolean; requestsPerMinute?: number; tokensPerMinute?: number };
     guardrails?: { enabled?: boolean; piiDetection?: boolean; contentFilter?: boolean; maxTokens?: number };
   }) => request('/api/settings', { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Audit Log
+  getAuditLog: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+    return request(`/api/audit-log${qs}`);
+  },
 };

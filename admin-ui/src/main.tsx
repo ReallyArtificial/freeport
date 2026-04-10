@@ -391,6 +391,7 @@ const icons: Record<string, string> = {
   'ab-tests': '\u2194',
   fallbacks: '\u21C5',
   settings: '\u2699',
+  'audit-log': '\u{1F4CB}',
 };
 
 // ---- Utility ----
@@ -787,7 +788,7 @@ function ApiKeys() {
   const [showCreate, setShowCreate] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ name: '', projectId: '', rateLimitRpm: '', rateLimitTpm: '' });
+  const [form, setForm] = useState({ name: '', projectId: '', rateLimitRpm: '', rateLimitTpm: '', scopes: '*', expiresIn: '' });
 
   const load = () => {
     Promise.all([api.listApiKeys(), api.listProjects()])
@@ -799,14 +800,33 @@ function ApiKeys() {
 
   const create = () => {
     setError('');
+    let expiresAt: string | undefined;
+    if (form.expiresIn) {
+      const days = parseInt(form.expiresIn);
+      if (days > 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + days);
+        expiresAt = d.toISOString();
+      }
+    }
     api.createApiKey({
       name: form.name,
       projectId: form.projectId || undefined,
       rateLimitRpm: form.rateLimitRpm ? parseInt(form.rateLimitRpm) : undefined,
       rateLimitTpm: form.rateLimitTpm ? parseInt(form.rateLimitTpm) : undefined,
+      scopes: form.scopes || undefined,
+      expiresAt,
     }).then((res: any) => {
       setNewKey(res.plainTextKey);
-      setForm({ name: '', projectId: '', rateLimitRpm: '', rateLimitTpm: '' });
+      setForm({ name: '', projectId: '', rateLimitRpm: '', rateLimitTpm: '', scopes: '*', expiresIn: '' });
+      load();
+    }).catch((err: any) => setError(err.message));
+  };
+
+  const rotate = (id: string, name: string) => {
+    if (!confirm(`Rotate API key "${name}"? The old key will be revoked.`)) return;
+    api.rotateApiKey(id).then((res: any) => {
+      setNewKey(res.plainTextKey);
       load();
     }).catch((err: any) => setError(err.message));
   };
@@ -869,8 +889,8 @@ function ApiKeys() {
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>Key Prefix</th><th>Project</th>
-                <th>Rate Limits</th><th>Status</th><th>Last Used</th><th></th>
+                <th>Name</th><th>Key Prefix</th><th>Project</th><th>Scopes</th>
+                <th>Rate Limits</th><th>Expires</th><th>Status</th><th>Last Used</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -879,11 +899,15 @@ function ApiKeys() {
                   <td style="color:var(--text); font-weight:500">{k.name}</td>
                   <td><span class="key-mask">{k.key_prefix}...</span></td>
                   <td>{projectName(k.project_id)}</td>
+                  <td><span class="mono" style="font-size:11px">{k.scopes ?? '*'}</span></td>
                   <td class="mono" style="font-size:11px">
                     {k.rate_limit_rpm ? `${k.rate_limit_rpm} RPM` : ''}
                     {k.rate_limit_rpm && k.rate_limit_tpm ? ' / ' : ''}
                     {k.rate_limit_tpm ? `${k.rate_limit_tpm} TPM` : ''}
                     {!k.rate_limit_rpm && !k.rate_limit_tpm ? '-' : ''}
+                  </td>
+                  <td style="font-size:12px; color:var(--text-tertiary)">
+                    {k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'Never'}
                   </td>
                   <td>
                     <span class={`badge ${k.is_active ? 'badge-green' : 'badge-red'}`}>
@@ -895,6 +919,7 @@ function ApiKeys() {
                   </td>
                   <td style="text-align:right">
                     <div class="btn-group" style="justify-content:flex-end">
+                      {k.is_active && <button class="btn btn-sm" onClick={() => rotate(k.id, k.name)}>Rotate</button>}
                       {k.is_active ? (
                         <button class="btn btn-warning btn-sm" onClick={() => revoke(k.id)}>Revoke</button>
                       ) : (
@@ -925,6 +950,20 @@ function ApiKeys() {
                 <option value="">No project</option>
                 {projects.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scopes</label>
+              <select class="input" value={form.scopes} onChange={(e: any) => setForm({ ...form, scopes: e.target.value })}>
+                <option value="*">Full access (*)</option>
+                <option value="proxy">Proxy only</option>
+                <option value="admin:read">Admin read-only</option>
+                <option value="admin:read,admin:write">Admin read+write</option>
+                <option value="proxy,admin:read">Proxy + Admin read</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Expires in <span style="color:var(--text-tertiary)">(days, optional)</span></label>
+              <input class="input" type="number" value={form.expiresIn} onInput={(e: any) => setForm({ ...form, expiresIn: e.target.value })} placeholder="e.g. 90 (blank = never)" />
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
               <div class="form-group">
@@ -1750,6 +1789,7 @@ function ABTests() {
   const [tests, setTests] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [results, setResults] = useState<any[]>([]);
+  const [analysis, setAnalysis] = useState<any>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showVariant, setShowVariant] = useState(false);
   const [prompts, setPrompts] = useState<any[]>([]);
@@ -1767,6 +1807,7 @@ function ABTests() {
       setSelected(data);
       setResults(data.results || []);
     }).catch(() => {});
+    api.getABTestAnalysis(id).then(setAnalysis).catch(() => setAnalysis(null));
   };
 
   const create = () => {
@@ -1887,6 +1928,47 @@ function ABTests() {
               ) : (
                 <div class="empty-state" style="padding:24px">
                   <div class="empty-state-desc">No variants yet. Add one to start testing.</div>
+                </div>
+              )}
+
+              {analysis && analysis.comparison && (
+                <div style="margin-top:16px">
+                  <div class="section-title">Statistical Analysis</div>
+                  <div style="border:1px solid var(--border); border-radius:8px; padding:16px">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px">
+                      <div>
+                        <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:4px">Latency</div>
+                        <div style="font-size:13px">
+                          {analysis.comparison.latencySignificant ? (
+                            <span class="badge badge-green">Winner: {analysis.comparison.latencyWinner}</span>
+                          ) : (
+                            <span class="badge badge-gray">Not significant</span>
+                          )}
+                          <div class="mono" style="font-size:11px; margin-top:4px">p={analysis.comparison.latencyPValue}, z={analysis.comparison.latencyZScore}</div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style="font-size:12px; color:var(--text-tertiary); margin-bottom:4px">Cost</div>
+                        <div style="font-size:13px">
+                          {analysis.comparison.costSignificant ? (
+                            <span class="badge badge-green">Winner: {analysis.comparison.costWinner}</span>
+                          ) : (
+                            <span class="badge badge-gray">Not significant</span>
+                          )}
+                          <div class="mono" style="font-size:11px; margin-top:4px">p={analysis.comparison.costPValue}, z={analysis.comparison.costZScore}</div>
+                        </div>
+                      </div>
+                    </div>
+                    {analysis.variants && (
+                      <div style="margin-top:12px">
+                        {analysis.variants.map((v: any) => (
+                          <div key={v.id} style="font-size:12px; color:var(--text-secondary); margin-top:4px">
+                            {v.name}: n={v.sampleSize}, latency={v.meanLatencyMs}ms [{v.latencyCI[0]}-{v.latencyCI[1]}], cost=${v.meanCost} [{v.costCI[0]}-{v.costCI[1]}]
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -2318,9 +2400,104 @@ function Settings() {
   );
 }
 
+// ---- Audit Log ----
+function AuditLog() {
+  const [entries, setEntries] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState({ action: '', resource_type: '' });
+
+  const load = () => {
+    setLoading(true);
+    const params: Record<string, string> = {};
+    if (filter.action) params.action = filter.action;
+    if (filter.resource_type) params.resource_type = filter.resource_type;
+    api.getAuditLog(params)
+      .then((res: any) => { setEntries(res.entries || []); setTotal(res.total || 0); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [filter.action, filter.resource_type]);
+
+  return (
+    <div>
+      <div class="page-header">
+        <div>
+          <h2 class="page-title">Audit Log</h2>
+          <p class="page-desc">Track all administrative actions ({total} total entries)</p>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex; gap:12px; align-items:center">
+          <select class="input" style="width:auto" value={filter.action} onChange={(e: any) => setFilter({ ...filter, action: e.target.value })}>
+            <option value="">All actions</option>
+            <option value="create">Create</option>
+            <option value="update">Update</option>
+            <option value="delete">Delete</option>
+            <option value="revoke">Revoke</option>
+            <option value="activate">Activate</option>
+            <option value="rotate">Rotate</option>
+            <option value="settings_change">Settings Change</option>
+          </select>
+          <select class="input" style="width:auto" value={filter.resource_type} onChange={(e: any) => setFilter({ ...filter, resource_type: e.target.value })}>
+            <option value="">All resources</option>
+            <option value="provider">Provider</option>
+            <option value="api_key">API Key</option>
+            <option value="prompt">Prompt</option>
+            <option value="fallback_chain">Fallback Chain</option>
+            <option value="ab_test">A/B Test</option>
+            <option value="settings">Settings</option>
+          </select>
+        </div>
+      </div>
+
+      {loading ? <div class="empty">Loading...</div> : entries.length === 0 ? (
+        <div class="card">
+          <div class="empty-state">
+            <div class="empty-state-icon">{'\u{1F4CB}'}</div>
+            <div class="empty-state-title">No audit entries</div>
+            <div class="empty-state-desc">Admin actions will be logged here</div>
+          </div>
+        </div>
+      ) : (
+        <div class="card" style="padding:0; overflow:hidden">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th><th>Action</th><th>Resource</th><th>Resource ID</th><th>Actor</th><th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e: any) => (
+                <tr key={e.id}>
+                  <td style="font-size:12px; color:var(--text-tertiary); white-space:nowrap">
+                    {new Date(e.created_at).toLocaleString()}
+                  </td>
+                  <td>
+                    <span class={`badge ${e.action === 'delete' || e.action === 'revoke' ? 'badge-red' : e.action === 'create' ? 'badge-green' : 'badge-blue'}`}>
+                      {e.action}
+                    </span>
+                  </td>
+                  <td style="font-size:12px">{e.resource_type}</td>
+                  <td class="mono" style="font-size:11px">{e.resource_id ? e.resource_id.slice(0, 12) : '-'}</td>
+                  <td style="font-size:12px">{e.actor ?? 'system'}</td>
+                  <td class="mono" style="font-size:11px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+                    {e.details ?? '-'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Main App ----
 
-type Page = 'dashboard' | 'providers' | 'api-keys' | 'logs' | 'prompts' | 'budgets' | 'ab-tests' | 'fallbacks' | 'settings';
+type Page = 'dashboard' | 'providers' | 'api-keys' | 'logs' | 'prompts' | 'budgets' | 'ab-tests' | 'fallbacks' | 'settings' | 'audit-log';
 
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -2335,6 +2512,7 @@ function App() {
     'ab-tests': { label: 'Experiments', component: () => <ABTests /> },
     fallbacks: { label: 'Fallbacks', component: () => <Fallbacks /> },
     settings: { label: 'Settings', component: () => <Settings /> },
+    'audit-log': { label: 'Audit Log', component: () => <AuditLog /> },
   };
 
   const CurrentPage = pages[page].component;
