@@ -9,6 +9,7 @@ import { executeWithFallback, executeWithFallbackStream } from '../routing/fallb
 import { getOrCreateBalancer } from '../routing/loadbalancer.js';
 import { getActiveTests, selectVariant, recordABResult } from '../routing/ab-router.js';
 import { getLogger } from '../logging/logger.js';
+import { incCounter, observeHistogram, incGauge, decGauge } from '../observability/metrics.js';
 
 export function createProxyHandler(config: FreeportConfig, registry: ProviderRegistry) {
   const log = getLogger();
@@ -17,6 +18,7 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
     const startTime = performance.now();
     const body = request.body as Record<string, unknown>;
 
+    incGauge('freeport_active_requests');
     try {
       // Parse and normalize the request
       const completionReq = normalizeRequest(body);
@@ -89,6 +91,9 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
           isFallback: false,
         });
 
+        incCounter('freeport_cache_hits_total');
+        incCounter('freeport_requests_total', { provider: 'cache', model: completionReq.model, status: '200' });
+        decGauge('freeport_active_requests');
         return reply.header('X-Cache', 'HIT').header('X-Cache-Similarity', String(cached.similarity)).send(cachedResponse);
       }
 
@@ -146,6 +151,10 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
           });
         }
 
+        incCounter('freeport_requests_total', { provider: streamResponse.provider, model: streamResponse.model, status: '200' });
+        observeHistogram('freeport_request_duration_seconds', { provider: streamResponse.provider, model: streamResponse.model }, latencyMs / 1000);
+        incCounter('freeport_cache_misses_total');
+        decGauge('freeport_active_requests');
         return; // Already sent via pipeStream
       }
 
@@ -180,6 +189,12 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
         });
       }
 
+      incCounter('freeport_requests_total', { provider: providerResponse.provider, model: response.model, status: '200' });
+      observeHistogram('freeport_request_duration_seconds', { provider: providerResponse.provider, model: response.model }, latencyMs / 1000);
+      incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'input' }, response.usage?.prompt_tokens ?? 0);
+      incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'output' }, response.usage?.completion_tokens ?? 0);
+      incCounter('freeport_cache_misses_total');
+      decGauge('freeport_active_requests');
       return reply.header('X-Cache', 'MISS').send(response);
     } catch (err: unknown) {
       const latencyMs = Math.round(performance.now() - startTime);
@@ -192,6 +207,8 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
       }, 'Proxy request failed');
 
       const statusCode = error.statusCode ?? 500;
+      incCounter('freeport_requests_total', { provider: 'unknown', model: 'unknown', status: String(statusCode) });
+      decGauge('freeport_active_requests');
       // Don't leak provider error details to clients
       const safeMessage = statusCode >= 500
         ? 'Internal server error'

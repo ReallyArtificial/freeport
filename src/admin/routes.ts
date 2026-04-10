@@ -7,7 +7,7 @@ import { resolvePrompt } from '../prompts/resolver.js';
 import { queryLogs, getLogStats } from '../logging/request-log.js';
 import { getProjectSpend, resetDailyBudgets, resetMonthlyBudgets } from '../budget/tracker.js';
 import { setKillSwitch } from '../budget/enforcer.js';
-import { getActiveTests, getABTestResults } from '../routing/ab-router.js';
+import { getActiveTests, getABTestResults, getABTestAnalysis } from '../routing/ab-router.js';
 import { clearCache } from '../cache/semantic.js';
 import { getDb } from '../db/connection.js';
 import {
@@ -15,8 +15,12 @@ import {
   deleteDbProvider, toProviderConfig,
 } from '../providers/manager.js';
 import {
-  createApiKey, listApiKeys, revokeApiKey, activateApiKey, deleteApiKey,
+  createApiKey, listApiKeys, revokeApiKey, activateApiKey, deleteApiKey, rotateApiKey,
 } from './api-keys.js';
+import { getAllProviderHealth } from '../routing/health.js';
+import { logAudit, queryAuditLog } from './audit.js';
+import { createBackup, listBackups, cleanOldBackups } from '../backup/manager.js';
+import { rotateEncryptionKey } from '../crypto/encryption.js';
 
 export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig, registry: ProviderRegistry) {
   const adminAuth = createAdminAuth(config);
@@ -34,7 +38,9 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
   app.post<{ Body: { slug: string; name: string; description?: string } }>(
     '/api/prompts',
     async (request) => {
-      return promptManager.createPrompt(request.body);
+      const result = promptManager.createPrompt(request.body);
+      logAudit(null, 'create', 'prompt', result.id, { slug: request.body.slug });
+      return result;
     },
   );
 
@@ -47,12 +53,15 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
   app.put<{ Params: { id: string }; Body: { name?: string; description?: string } }>(
     '/api/prompts/:id',
     async (request) => {
-      return promptManager.updatePrompt(request.params.id, request.body);
+      const result = promptManager.updatePrompt(request.params.id, request.body);
+      logAudit(null, 'update', 'prompt', request.params.id);
+      return result;
     },
   );
 
   app.delete<{ Params: { id: string } }>('/api/prompts/:id', async (request) => {
     promptManager.deletePrompt(request.params.id);
+    logAudit(null, 'delete', 'prompt', request.params.id);
     return { success: true };
   });
 
@@ -233,6 +242,10 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     return row;
   });
 
+  app.get<{ Params: { id: string } }>('/api/ab-tests/:id/analysis', async (request) => {
+    return getABTestAnalysis(request.params.id);
+  });
+
   app.put<{ Params: { id: string }; Body: { status: string } }>(
     '/api/ab-tests/:id/status',
     async (request) => {
@@ -296,6 +309,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
       // Register in the live registry
       const providerConfig = toProviderConfig(provider);
       registry.register(providerConfig);
+      logAudit(null, 'create', 'provider', provider.id, { name, type });
       return {
         ...provider,
         api_key: provider.api_key.slice(0, 8) + '...' + provider.api_key.slice(-4),
@@ -333,6 +347,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     if (updated.enabled) {
       registry.register(toProviderConfig(updated));
     }
+    logAudit(null, 'update', 'provider', request.params.id, { name: updated.name });
     return {
       ...updated,
       api_key: updated.api_key.slice(0, 8) + '...' + updated.api_key.slice(-4),
@@ -347,6 +362,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     }
     deleteDbProvider(request.params.id);
     registry.unregister(existing.name);
+    logAudit(null, 'delete', 'provider', request.params.id, { name: existing.name });
     return { success: true };
   });
 
@@ -412,25 +428,39 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     }
   });
 
+  // --- Provider Health ---
+  app.get('/api/providers/health', async () => {
+    return getAllProviderHealth();
+  });
+
   // --- API Keys ---
   app.get('/api/api-keys', async () => {
     return listApiKeys();
   });
 
   app.post<{
-    Body: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number };
+    Body: { name: string; projectId?: string; rateLimitRpm?: number; rateLimitTpm?: number; scopes?: string; expiresAt?: string };
   }>('/api/api-keys', async (request, reply) => {
     if (!request.body.name) {
       return reply.status(400).send({ error: { message: 'name is required' } });
     }
-    const result = createApiKey(request.body);
-    return { key: result.key, plainTextKey: result.plainTextKey };
+    try {
+      const result = createApiKey(request.body);
+      logAudit(null, 'create', 'api_key', result.key.id, { name: request.body.name, scopes: request.body.scopes });
+      return { key: result.key, plainTextKey: result.plainTextKey };
+    } catch (err: any) {
+      if (err.statusCode === 400) {
+        return reply.status(400).send({ error: { message: err.message } });
+      }
+      throw err;
+    }
   });
 
   app.put<{ Params: { id: string } }>(
     '/api/api-keys/:id/revoke',
     async (request) => {
       revokeApiKey(request.params.id);
+      logAudit(null, 'revoke', 'api_key', request.params.id);
       return { success: true };
     },
   );
@@ -439,6 +469,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     '/api/api-keys/:id/activate',
     async (request) => {
       activateApiKey(request.params.id);
+      logAudit(null, 'activate', 'api_key', request.params.id);
       return { success: true };
     },
   );
@@ -447,7 +478,20 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     '/api/api-keys/:id',
     async (request) => {
       deleteApiKey(request.params.id);
+      logAudit(null, 'delete', 'api_key', request.params.id);
       return { success: true };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/api/api-keys/:id/rotate',
+    async (request, reply) => {
+      const result = rotateApiKey(request.params.id);
+      if (!result) {
+        return reply.status(404).send({ error: { message: 'API key not found' } });
+      }
+      logAudit(null, 'rotate', 'api_key', request.params.id, { newKeyId: result.key.id });
+      return { key: result.key, plainTextKey: result.plainTextKey };
     },
   );
 
@@ -481,6 +525,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
         failureThreshold ?? 3,
         resetTimeoutMs ?? 60000,
       ) as Record<string, unknown>;
+      logAudit(null, 'create', 'fallback_chain', row.id as string, { name });
       return row;
     } catch (err: any) {
       if (err.message?.includes('UNIQUE constraint')) {
@@ -517,6 +562,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     sets.push("updated_at = datetime('now')");
     vals.push(request.params.id);
     db.prepare(`UPDATE fallback_chains SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    logAudit(null, 'update', 'fallback_chain', request.params.id);
     return db.prepare('SELECT * FROM fallback_chains WHERE id = ?').get(request.params.id);
   });
 
@@ -527,6 +573,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
       return reply.status(404).send({ error: { message: 'Fallback chain not found' } });
     }
     db.prepare('DELETE FROM fallback_chains WHERE id = ?').run(request.params.id);
+    logAudit(null, 'delete', 'fallback_chain', request.params.id);
     return { success: true };
   });
 
@@ -588,7 +635,59 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     if (rateLimit) upsert.run('rateLimit', JSON.stringify(config.rateLimit));
     if (guardrails) upsert.run('guardrails', JSON.stringify(config.guardrails));
 
+    logAudit(null, 'settings_change', 'settings', null, {
+      changed: Object.keys(request.body).filter(k => (request.body as any)[k] !== undefined),
+    });
     return { success: true };
+  });
+
+  // --- Audit Log ---
+  app.get<{
+    Querystring: {
+      action?: string;
+      resource_type?: string;
+      since?: string;
+      until?: string;
+      limit?: string;
+      offset?: string;
+    };
+  }>('/api/audit-log', async (request) => {
+    return queryAuditLog({
+      action: request.query.action,
+      resourceType: request.query.resource_type,
+      since: request.query.since,
+      until: request.query.until,
+      limit: request.query.limit ? parseInt(request.query.limit) : undefined,
+      offset: request.query.offset ? parseInt(request.query.offset) : undefined,
+    });
+  });
+
+  // --- Backups ---
+  app.post('/api/backup', async (_request, reply) => {
+    try {
+      const result = await createBackup();
+      cleanOldBackups();
+      logAudit(null, 'create', 'backup', null, { filename: result.filename });
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: { message: err.message ?? 'Backup failed' } });
+    }
+  });
+
+  app.get('/api/backups', async () => {
+    return listBackups();
+  });
+
+  // --- Encryption Key Rotation ---
+  app.post('/api/encryption/rotate-key', async (request, reply) => {
+    try {
+      const body = request.body as { newKeyHex?: string } | undefined;
+      const result = rotateEncryptionKey(body?.newKeyHex);
+      logAudit(null, 'rotate', 'encryption_key', null, { rotated: result.rotated, failed: result.failed });
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: { message: err.message ?? 'Key rotation failed' } });
+    }
   });
 
   // --- System ---
