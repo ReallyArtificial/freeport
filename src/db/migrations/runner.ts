@@ -12,6 +12,9 @@ const MIGRATIONS = [
   { version: 4, file: '004_ab_tests.sql' },
   { version: 5, file: '005_providers.sql' },
   { version: 6, file: '006_fallback_chains.sql' },
+  { version: 7, file: '007_api_key_scopes.sql' },
+  { version: 8, file: '008_encrypt_provider_keys.sql' },
+  { version: 9, file: '009_audit_log.sql' },
 ];
 
 export function runMigrations(db: Database.Database): void {
