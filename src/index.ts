@@ -3,12 +3,14 @@ import { initDb, closeDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/runner.js';
 import { initLogger, getLogger } from './logging/logger.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { loadDbProviderConfigs } from './providers/manager.js';
+import { loadDbProviderConfigs, encryptExistingKeys } from './providers/manager.js';
 import { createServer } from './server.js';
 import { initBuiltinGuardrails, loadCustomPlugins } from './guardrails/engine.js';
 import { initEmbedder } from './cache/embedder.js';
 import { initVectorCache } from './cache/semantic.js';
 import { startRetentionCleanup } from './logging/retention.js';
+import { initEncryption } from './crypto/encryption.js';
+import { startHealthChecks } from './routing/health.js';
 import { resolve } from 'node:path';
 
 async function main() {
@@ -56,6 +58,16 @@ async function main() {
     // runtime_config table may not exist yet (pre-migration 6)
   }
 
+  // Initialize encryption
+  try {
+    initEncryption();
+    log.info('Provider key encryption initialized');
+    // Encrypt any unencrypted provider keys
+    encryptExistingKeys();
+  } catch (err) {
+    log.warn({ err }, 'Encryption initialization failed — provider keys will be stored in plaintext');
+  }
+
   // Register providers from config file / env vars
   const registry = new ProviderRegistry();
   for (const providerConfig of config.providers) {
@@ -96,6 +108,24 @@ async function main() {
   // Start log retention cleanup (30 days default)
   startRetentionCleanup(30);
 
+  // Start provider health checks
+  const allProviderConfigs = [...config.providers.map(p => ({
+    name: p.name,
+    type: p.type,
+    apiBase: p.apiBase,
+    apiKey: p.keys[0]?.key ?? '',
+  })), ...dbProviders.map(p => ({
+    name: p.name,
+    type: p.type,
+    apiBase: p.apiBase,
+    apiKey: p.keys[0]?.key ?? '',
+  }))];
+
+  if (allProviderConfigs.length > 0) {
+    startHealthChecks(allProviderConfigs, 60000);
+    log.info(`Health checks started for ${allProviderConfigs.length} provider(s)`);
+  }
+
   // Create and start server
   const app = await createServer(config, registry);
 
@@ -130,6 +160,18 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  closeDb();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+  closeDb();
+  process.exit(1);
+});
 
 main().catch(err => {
   console.error('Fatal error:', err);

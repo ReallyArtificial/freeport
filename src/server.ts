@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -8,6 +9,7 @@ import type { ProviderRegistry } from './providers/registry.js';
 import { createProxyHandler } from './proxy/handler.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { getLogger } from './logging/logger.js';
+import { formatMetrics } from './observability/metrics.js';
 
 export async function createServer(config: FreeportConfig, registry: ProviderRegistry) {
   const log = getLogger();
@@ -21,6 +23,12 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
   await app.register(cors, {
     origin: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  });
+
+  // Security headers
+  await app.register(helmet, {
+    contentSecurityPolicy: false,           // API gateway, not serving HTML
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // proxy cross-origin
   });
 
   // Block cross-origin requests to admin API unless from same origin
@@ -67,10 +75,16 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
     };
   });
 
+  // Prometheus metrics endpoint
+  app.get('/metrics', async (_request, reply) => {
+    reply.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    return reply.send(formatMetrics());
+  });
+
   // Proxy auth — supports both FREEPORT_API_KEY and fport_ database keys
   const proxyApiKey = config.auth?.apiKey;
   const { createHash, timingSafeEqual } = await import('node:crypto');
-  const { validateApiKey } = await import('./admin/api-keys.js');
+  const { validateApiKey, hasScope } = await import('./admin/api-keys.js');
 
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/v1/')) return;
@@ -88,13 +102,20 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
       const apiKeyRow = validateApiKey(token);
       if (!apiKeyRow) {
         return reply.status(401).send({
-          error: { message: 'Invalid or revoked API key', type: 'auth_error' },
+          error: { message: 'Invalid, revoked, or expired API key', type: 'auth_error' },
+        });
+      }
+      // Enforce proxy scope
+      if (!hasScope(apiKeyRow, 'proxy')) {
+        return reply.status(403).send({
+          error: { message: 'API key does not have proxy scope', type: 'auth_error' },
         });
       }
       // Attach context to request for downstream use
       (request as any).freeportContext = {
         projectId: apiKeyRow.project_id,
         apiKeyId: apiKeyRow.id,
+        apiKeyScopes: apiKeyRow.scopes,
       };
       return;
     }
