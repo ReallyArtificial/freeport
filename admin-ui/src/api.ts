@@ -1,12 +1,52 @@
 const BASE = '';
+const ADMIN_KEY_STORAGE = 'freeport_admin_api_key';
+
+// Returns the stored admin key, or null if none. Called per-request so a
+// freshly-pasted key takes effect immediately without a reload.
+export function getAdminKey(): string | null {
+  try {
+    return localStorage.getItem(ADMIN_KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
+export function setAdminKey(key: string | null): void {
+  try {
+    if (key) localStorage.setItem(ADMIN_KEY_STORAGE, key);
+    else localStorage.removeItem(ADMIN_KEY_STORAGE);
+  } catch {
+    // localStorage unavailable (private mode, etc.) — silently no-op.
+  }
+}
+
+export class UnauthorizedError extends Error {
+  constructor(message = 'Admin API key required or invalid.') {
+    super(message);
+    this.name = 'UnauthorizedError';
+  }
+}
 
 async function request(path: string, opts?: RequestInit) {
   const headers: Record<string, string> = { ...opts?.headers as Record<string, string> };
   if (opts?.body) headers['Content-Type'] = 'application/json';
+
+  // Attach the admin key if we have one. Server only requires it when
+  // FREEPORT_ADMIN_API_KEY is set; in dev/no-auth mode the header is ignored.
+  const adminKey = getAdminKey();
+  if (adminKey && !headers['Authorization']) {
+    headers['Authorization'] = `Bearer ${adminKey}`;
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     ...opts,
     headers,
   });
+  if (res.status === 401) {
+    // Drop the bad key so the UI can prompt for a fresh one.
+    setAdminKey(null);
+    throw new UnauthorizedError();
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
     throw new Error(err.error?.message ?? `HTTP ${res.status}`);

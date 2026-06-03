@@ -1,6 +1,6 @@
 import { render } from 'preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
-import { api } from './api';
+import { api, getAdminKey, setAdminKey, UnauthorizedError } from './api';
 
 // ---- Styles ----
 const styles = `
@@ -2499,8 +2499,72 @@ function AuditLog() {
 
 type Page = 'dashboard' | 'providers' | 'api-keys' | 'logs' | 'prompts' | 'budgets' | 'ab-tests' | 'fallbacks' | 'settings' | 'audit-log';
 
+/**
+ * Probe an admin endpoint to figure out whether we need a key. Returns:
+ *   - 'ok'         : auth disabled OR our stored key works
+ *   - 'need-key'   : auth required and we don't have a working key
+ *   - 'unknown'    : network failure
+ */
+async function probeAuth(): Promise<'ok' | 'need-key' | 'unknown'> {
+  try {
+    await api.systemStatus();
+    return 'ok';
+  } catch (err) {
+    if (err instanceof UnauthorizedError) return 'need-key';
+    return 'unknown';
+  }
+}
+
+function promptForAdminKey(currentKeyHint: boolean): string | null {
+  const msg = currentKeyHint
+    ? 'Stored admin key was rejected. Enter a valid Freeport admin API key:'
+    : 'Freeport admin API is protected. Enter your FREEPORT_ADMIN_API_KEY:';
+  const entered = typeof window !== 'undefined' ? window.prompt(msg) : null;
+  if (!entered) return null;
+  const trimmed = entered.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function App() {
   const [page, setPage] = useState<Page>('dashboard');
+  const [authState, setAuthState] = useState<'checking' | 'ok' | 'need-key' | 'unknown'>('checking');
+  // Bumping this nonce forces children to remount and refetch after a key change.
+  const [authNonce, setAuthNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const result = await probeAuth();
+      if (cancelled) return;
+      if (result === 'need-key') {
+        const key = promptForAdminKey(getAdminKey() !== null);
+        if (key) {
+          setAdminKey(key);
+          const retry = await probeAuth();
+          if (cancelled) return;
+          setAuthState(retry);
+          setAuthNonce((n) => n + 1);
+          return;
+        }
+      }
+      setAuthState(result);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const changeAdminKey = async () => {
+    const key = promptForAdminKey(getAdminKey() !== null);
+    if (!key) return;
+    setAdminKey(key);
+    setAuthState('checking');
+    const result = await probeAuth();
+    setAuthState(result);
+    setAuthNonce((n) => n + 1);
+    if (result === 'need-key') {
+      // eslint-disable-next-line no-alert
+      window.alert('That key was also rejected. Check FREEPORT_ADMIN_API_KEY on the server.');
+    }
+  };
 
   const pages: Record<Page, { label: string; component: (props: { onNavigate: (p: string) => void }) => any }> = {
     dashboard: { label: 'Overview', component: ({ onNavigate }) => <Dashboard onNavigate={onNavigate} /> },
@@ -2539,11 +2603,50 @@ function App() {
             ))}
           </div>
           <div class="sidebar-footer">
-            v0.1.0
+            <div>v0.1.0</div>
+            <button
+              type="button"
+              onClick={changeAdminKey}
+              style={{
+                marginTop: '8px',
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                color: 'var(--text-tertiary)',
+                cursor: 'pointer',
+                fontFamily: 'var(--font)',
+                fontSize: '11px',
+                textDecoration: 'underline',
+              }}
+              title="Set or rotate the admin API key (stored in localStorage)"
+            >
+              {authState === 'ok' ? 'change admin key' : 'set admin key'}
+            </button>
           </div>
         </nav>
         <main class="main">
-          <CurrentPage onNavigate={(p: string) => setPage(p as Page)} />
+          {authState === 'checking' && (
+            <div style={{ padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+              Checking admin access…
+            </div>
+          )}
+          {authState === 'need-key' && (
+            <div style={{ padding: '40px 0' }}>
+              <div style={{ fontSize: '14px', color: 'var(--text)', marginBottom: '12px' }}>
+                Admin API key required.
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                This Freeport instance has <code>FREEPORT_ADMIN_API_KEY</code> set. Paste it to access the admin UI.
+              </div>
+              <button class="btn btn-primary" onClick={changeAdminKey}>Set admin key</button>
+            </div>
+          )}
+          {authState === 'unknown' && (
+            <div style={{ padding: '40px 0', color: 'var(--text-secondary)', fontSize: '13px' }}>
+              Could not reach the Freeport server. Is it running?
+            </div>
+          )}
+          {authState === 'ok' && <CurrentPage key={authNonce} onNavigate={(p: string) => setPage(p as Page)} />}
         </main>
       </div>
     </>
