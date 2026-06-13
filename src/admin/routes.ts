@@ -701,7 +701,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
 
     return {
       status: 'ok',
-      version: '0.1.0',
+      version: '1.0.0',
       providers: allProviders,
       totalLogs: logCount.count,
       cacheEntries: cacheCount.count,

@@ -2,8 +2,9 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import fastifyStatic from '@fastify/static';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { FreeportConfig } from './config/types.js';
 import type { ProviderRegistry } from './providers/registry.js';
 import { createProxyHandler } from './proxy/handler.js';
@@ -71,7 +72,7 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
-      version: '0.1.0',
+      version: '1.0.0',
     };
   });
 
@@ -203,9 +204,13 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
   // Admin API routes
   registerAdminRoutes(app, config, registry);
 
-  // Serve admin UI (must be pre-built via `npm run build:ui`)
-  const uiDir = resolve(process.cwd(), 'admin-ui');
-  const uiPath = resolve(uiDir, 'dist');
+  // Serve admin UI. Prefer the prebuilt copy bundled into dist/ (so it works on
+  // installed/global runs regardless of cwd); fall back to the dev build
+  // location (admin-ui/dist) when running from source via tsx.
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const bundledUi = resolve(moduleDir, 'admin-ui');
+  const devUi = resolve(process.cwd(), 'admin-ui', 'dist');
+  const uiPath = existsSync(bundledUi) ? bundledUi : devUi;
 
   if (!existsSync(uiPath)) {
     log.warn('Admin UI not built — run "npm run build:ui" to enable the dashboard at /ui/');

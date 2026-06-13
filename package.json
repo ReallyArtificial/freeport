@@ -1,17 +1,25 @@
 {
-  "name": "freeport",
-  "version": "0.1.0",
+  "name": "@reallyartificial/freeport",
+  "version": "1.0.0",
   "description": "Open-source LLM gateway — prompt management, model fallback, caching, cost tracking, guardrails",
   "type": "module",
   "main": "dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "preinstall": "node scripts/check-node.js",
-    "postinstall": "cd admin-ui && npm install --no-audit --no-fund 2>/dev/null || true",
     "setup": "npm install && npm run build:ui && echo '\n  Ready! Run: npm run dev\n'",
     "build": "tsc && cp src/db/migrations/*.sql dist/db/migrations/",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build:ui": "cd admin-ui && npm install --no-audit --no-fund && npm run build",
+    "copy:ui": "node scripts/copy-ui.js",
+    "prepack": "npm run build && npm run build:ui && npm run copy:ui",
     "lint": "eslint src/",
     "test": "vitest run"
   },
