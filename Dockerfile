@@ -17,11 +17,11 @@ COPY src/ ./src/
 # Build TypeScript
 RUN npm run build
 
-# Admin UI build (if present)
+# Admin UI build — bundle into dist/admin-ui so it ships with the dist copy and
+# resolves at runtime relative to the compiled server module (not cwd).
 COPY admin-ui/ ./admin-ui/
-RUN if [ -f admin-ui/package.json ]; then \
-      cd admin-ui && npm install && npm run build; \
-    fi
+RUN cd admin-ui && npm install && npm run build && cd .. \
+    && mkdir -p dist/admin-ui && cp -r admin-ui/dist/. dist/admin-ui/
 
 # Production stage
 FROM base AS production
@@ -30,19 +30,19 @@ FROM base AS production
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev && npm cache clean --force
 
-# Copy built files
+# Copy built files (dist already contains admin-ui/ and db/migrations/*.sql)
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/admin-ui/dist ./admin-ui/dist 2>/dev/null || true
 
-# Copy config and migrations
+# Copy default config
 COPY config/ ./config/
-COPY src/db/migrations/*.sql ./dist/db/migrations/
 
 # Create data directory
 RUN mkdir -p /app/data /app/plugins
 
-# Environment defaults
-ENV NODE_ENV=production
+# Environment defaults. NODE_ENV is intentionally NOT forced to "production" so
+# `docker run`/`docker compose up` boots out of the box for evaluation. For a
+# hardened deployment, set -e NODE_ENV=production with FREEPORT_ADMIN_API_KEY +
+# FREEPORT_API_KEY to enforce required auth.
 ENV FREEPORT_PORT=4000
 ENV FREEPORT_HOST=0.0.0.0
 
