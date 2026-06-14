@@ -1,14 +1,18 @@
 {
   "name": "@reallyartificial/freeport",
-  "version": "1.0.0",
-  "description": "Open-source LLM gateway — prompt management, model fallback, caching, cost tracking, guardrails",
+  "version": "1.0.1",
+  "description": "Open-source, self-hosted, OpenAI-compatible LLM gateway — multi-provider routing, fallback, semantic cache, budget caps, PII guardrails, audit logs",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "freeport": "bin/freeport.js"
+  },
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "dist",
+    "bin",
     "README.md",
     "LICENSE"
   ],

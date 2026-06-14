@@ -72,7 +72,7 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
-      version: '1.0.0',
+      version: '1.0.1',
     };
   });
 

@@ -1,40 +1,54 @@
-# Freeport
+# @reallyartificial/freeport
 
-**Open-source LLM Gateway** — self-hosted, single Docker container.
+**The open-source LLM gateway you run yourself.** A self-hosted, OpenAI-API-compatible gateway that sits between your app and the model providers — adding multi-provider routing, fallback, semantic caching, cost/budget caps, PII guardrails, audit logging and encrypted keys. Your prompts never leave your infrastructure.
 
-Prompt management, model fallback, semantic caching, cost tracking, guardrails, A/B testing, and an admin UI. Drop-in replacement for the OpenAI API — works with any OpenAI SDK.
+- 🔌 **Drop-in OpenAI API** — point any OpenAI SDK at it, keep your code
+- 🔀 **Multi-provider** — OpenAI, Anthropic, Google Gemini behind one API, with fallback + circuit breaker
+- 🛡️ **Compliance-grade** — PII redaction, audit logs, budget caps, AES-256-GCM encrypted keys
+- 🏠 **Self-hosted** — a single process / container, SQLite-backed, no external dependencies
+- 📊 **Built-in admin UI** — add providers, set budgets, inspect logs at `/ui/`
 
-## Quick Start
+MIT licensed · [GitHub](https://github.com/ReallyArtificial/freeport)
+
+---
+
+## Quickstart
+
+Run the gateway with no install:
 
 ```bash
-npm install
-npm run build:ui   # build the admin dashboard
-npm run dev        # starts on http://localhost:4000
+npx @reallyartificial/freeport
 ```
 
-Open `http://localhost:4000/ui/` and add your API keys through the Providers page. No environment variables or config files required to get started.
+It starts on `http://localhost:4000`. Open the dashboard at **`http://localhost:4000/ui/`** and add your provider API keys (stored in a local SQLite database). No config file required to start.
 
-Alternatively, run with Docker:
+Or install it globally:
 
 ```bash
-docker-compose up
+npm i -g @reallyartificial/freeport
+freeport
 ```
 
-The gateway starts on `http://localhost:4000`. Admin UI at `http://localhost:4000/ui/`.
+Or run with Docker:
 
-## Usage
+```bash
+git clone https://github.com/ReallyArtificial/freeport
+cd freeport && docker compose up
+```
 
-Point your OpenAI SDK at Freeport:
+## Use it
+
+Point any OpenAI SDK at the gateway's `/v1` base URL:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:4000/v1",
-    api_key="any-key",  # or your configured API key
+    api_key="any-key",  # or your configured proxy key
 )
 
-response = client.chat.completions.create(
+resp = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Hello!"}],
 )
@@ -43,23 +57,37 @@ response = client.chat.completions.create(
 ```typescript
 import OpenAI from 'openai';
 
-const client = new OpenAI({
-  baseURL: 'http://localhost:4000/v1',
-  apiKey: 'any-key',
-});
-
-const response = await client.chat.completions.create({
+const client = new OpenAI({ baseURL: 'http://localhost:4000/v1', apiKey: 'any-key' });
+const resp = await client.chat.completions.create({
   model: 'gpt-4o-mini',
   messages: [{ role: 'user', content: 'Hello!' }],
 });
 ```
 
-Streaming works identically — set `stream: true`.
+Streaming works identically — set `stream: true`. Requests are accepted in the OpenAI format; Anthropic and Google are supported as upstream providers (freeport translates for you).
 
-## Features
+## Configure providers
 
-### Multi-Provider Support
-Route requests to OpenAI, Anthropic, and Google Gemini through a unified OpenAI-compatible API.
+Three ways, in any combination:
+
+**1. Admin UI** (easiest) — start the server, open `http://localhost:4000/ui/`, go to **Providers**, add your keys.
+
+**2. Environment variables:**
+
+```bash
+FREEPORT_OPENAI_API_KEY=sk-xxx npx @reallyartificial/freeport
+```
+
+| Env var | Description |
+|---------|-------------|
+| `FREEPORT_OPENAI_API_KEY` / `FREEPORT_ANTHROPIC_API_KEY` / `FREEPORT_GOOGLE_API_KEY` | Provider keys |
+| `FREEPORT_ADMIN_API_KEY` | Admin API auth key |
+| `FREEPORT_API_KEY` | Proxy API auth key |
+| `FREEPORT_PORT` / `FREEPORT_HOST` | Server port (default `4000`) / host |
+| `FREEPORT_CONFIG` | Path to a YAML config file |
+| `NODE_ENV=production` | Enforce required auth keys before boot |
+
+**3. YAML config** — point `FREEPORT_CONFIG` at a file. Values support `${ENV_VAR}` interpolation (`${VAR:-default}`):
 
 ```yaml
 providers:
@@ -71,222 +99,56 @@ providers:
     type: anthropic
     keys:
       - key: "${ANTHROPIC_API_KEY}"
-```
 
-### Fallback Chains + Circuit Breaker
-Automatic failover across providers. If OpenAI is down, fall back to Anthropic.
-
-```yaml
 fallbackChains:
   - name: primary
-    providers: [openai, anthropic, google]
-    circuitBreaker:
-      failureThreshold: 3
-      resetTimeoutMs: 60000
+    providers: [openai, anthropic]
+    circuitBreaker: { failureThreshold: 3, resetTimeoutMs: 60000 }
+
+cache: { enabled: true, similarityThreshold: 0.95, ttlSeconds: 3600 }
+guardrails: { enabled: true, piiDetection: true, contentFilter: true }
+rateLimit: { enabled: true, requestsPerMinute: 60 }
 ```
 
-### Prompt Management
-Version prompts externally. Update them without redeploying your app.
+> For production, set `NODE_ENV=production` along with `FREEPORT_ADMIN_API_KEY` and `FREEPORT_API_KEY` to require authentication.
+
+## Features
+
+- **Multi-provider routing** — OpenAI, Anthropic, Google Gemini through one OpenAI-compatible API.
+- **Fallback chains + circuit breaker** — automatic failover when a provider is down.
+- **Semantic cache** — similar prompts return cached responses using local embeddings (all-MiniLM-L6-v2); no external calls.
+- **Cost tracking & budgets** — per-project spend tracking with daily/monthly caps and a kill switch.
+- **PII & content guardrails** — detect SSNs, cards, emails, phone numbers; filter content; cap tokens. Pluggable.
+- **Audit logging** — every request/response logged with usage analytics and configurable retention.
+- **Encrypted keys** — provider keys stored encrypted with AES-256-GCM.
+- **Rate limiting** — token-bucket limiter with per-key limits.
+- **Prompt versioning & A/B** — manage prompts externally; split traffic between variants.
+- **Prometheus metrics** — counters and histograms for latency, cost and volume.
+- **Load balancing** — round-robin across multiple keys per provider.
+
+## API endpoints
+
+**Proxy (OpenAI-compatible):** `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`
+
+**Admin API:** `/api/providers`, `/api/prompts`, `/api/projects`, `/api/budgets/:projectId` (+ `/kill`), `/api/logs` (+ `/stats`), `/api/ab-tests`, `/api/system/status`, `GET /health`, `GET /metrics`
+
+See the [full documentation on GitHub](https://github.com/ReallyArtificial/freeport).
+
+## From source / contributing
 
 ```bash
-# Create a prompt
-curl -X POST http://localhost:4000/api/prompts \
-  -H "Content-Type: application/json" \
-  -d '{"slug": "summarize", "name": "Summarizer"}'
-
-# Add a version and publish it
-curl -X POST http://localhost:4000/api/prompts/{id}/versions \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Summarize this: {{text}}", "tag": "published"}'
-
-# Use it in requests (via freeport metadata)
-curl -X POST http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "placeholder"}],
-    "freeport": {"prompt": "summarize", "variables": {"text": "..."}}
-  }'
+git clone https://github.com/ReallyArtificial/freeport
+cd freeport
+npm install
+npm run build:ui   # build the admin dashboard
+npm run dev        # http://localhost:4000
 ```
 
-### Semantic Caching
-Similar prompts return cached responses. Uses local embeddings (all-MiniLM-L6-v2) — no external API calls.
+Custom guardrails: drop a `.js` module exporting `checkInput(text)` / `checkOutput(text)` into a `plugins/` directory and reference it under `guardrails.customPlugins`.
 
-```yaml
-cache:
-  enabled: true
-  similarityThreshold: 0.95
-  ttlSeconds: 3600
-```
+## Tech stack
 
-### Spend Tracking & Budgets
-Per-project cost tracking with hard budget caps and kill switches.
-
-```bash
-# Create a project with a budget
-curl -X POST http://localhost:4000/api/projects \
-  -d '{"name": "my-app", "budgetLimit": 50}'
-
-# Set budget limits
-curl -X POST http://localhost:4000/api/budgets/{projectId} \
-  -d '{"monthlyLimit": 100, "dailyLimit": 10}'
-
-# Emergency kill switch
-curl -X POST http://localhost:4000/api/budgets/{projectId}/kill \
-  -d '{"killed": true}'
-```
-
-### Input/Output Guardrails
-PII detection (SSN, credit card, email, phone), content filtering, token limits. Plugin architecture for custom guardrails.
-
-```yaml
-guardrails:
-  enabled: true
-  piiDetection: true
-  contentFilter: true
-  maxTokens: 128000
-  customPlugins:
-    - my-custom-guardrail.js
-```
-
-### A/B Testing
-Split traffic between prompt variants and track metrics.
-
-### Rate Limiting
-Token bucket rate limiter with per-key limits.
-
-```yaml
-rateLimit:
-  enabled: true
-  requestsPerMinute: 60
-```
-
-### Load Balancing
-Round-robin across multiple API keys per provider.
-
-```yaml
-providers:
-  - name: openai
-    type: openai
-    keys:
-      - key: "${OPENAI_KEY_1}"
-      - key: "${OPENAI_KEY_2}"
-      - key: "${OPENAI_KEY_3}"
-```
-
-## API Endpoints
-
-### Proxy (OpenAI-compatible)
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/chat/completions` | Chat completion (streaming supported) |
-| POST | `/v1/completions` | Legacy completion |
-| POST | `/v1/embeddings` | Embedding passthrough |
-| GET | `/v1/models` | List available models |
-
-### Admin API
-| Method | Path | Description |
-|--------|------|-------------|
-| GET/POST | `/api/providers` | List/create LLM providers |
-| PUT/DELETE | `/api/providers/:id` | Update/delete provider |
-| GET/POST | `/api/prompts` | List/create prompts |
-| GET/PUT/DELETE | `/api/prompts/:id` | Get/update/delete prompt |
-| POST | `/api/prompts/:id/versions` | Create prompt version |
-| POST | `/api/prompts/resolve` | Resolve prompt with variables |
-| GET/POST | `/api/projects` | List/create projects |
-| GET/POST | `/api/budgets/:projectId` | Get/set budget |
-| POST | `/api/budgets/:projectId/kill` | Kill switch |
-| GET | `/api/logs` | Query request logs |
-| GET | `/api/logs/stats` | Usage analytics |
-| GET/POST | `/api/ab-tests` | List/create A/B tests |
-| GET | `/api/system/status` | System status |
-| POST | `/api/system/cache/clear` | Clear cache |
-| GET | `/health` | Health check |
-
-## Configuration
-
-Providers can be configured in three ways (any combination works):
-
-### Option 1: Admin UI (recommended for local dev)
-
-Start the server and open `http://localhost:4000/ui/`. Go to **Providers** and add your API keys. They are stored in the local SQLite database and persist across restarts.
-
-### Option 2: Environment Variables
-
-```bash
-FREEPORT_OPENAI_API_KEY=sk-xxx npm run dev
-```
-
-| Env Var | Description |
-|---------|-------------|
-| `FREEPORT_OPENAI_API_KEY` | OpenAI API key |
-| `FREEPORT_ANTHROPIC_API_KEY` | Anthropic API key |
-| `FREEPORT_GOOGLE_API_KEY` | Google API key |
-| `FREEPORT_ADMIN_API_KEY` | Admin API authentication key |
-| `FREEPORT_API_KEY` | Proxy API authentication key |
-| `FREEPORT_PORT` | Server port (default: 4000) |
-| `FREEPORT_HOST` | Server host (default: 0.0.0.0) |
-| `FREEPORT_CONFIG` | Path to config file |
-
-### Option 3: YAML Config File
-
-```bash
-cp config/freeport.example.yaml config/freeport.yaml
-# Edit with your API keys, then:
-npm run dev
-```
-
-YAML values support `${ENV_VAR}` interpolation with `${VAR:-default}` syntax.
-
-## Architecture
-
-```
-Client (OpenAI SDK) --> Freeport (Fastify)
-                          |
-                    Pre-Processing:
-                      Auth -> Rate Limit -> Budget Check ->
-                      Prompt Resolution -> Input Guardrails ->
-                      Semantic Cache Lookup
-                          |
-                    Routing:
-                      A/B Router -> Fallback Chain -> Load Balancer
-                          |
-                    LLM Provider (OpenAI / Anthropic / Google)
-                          |
-                    Post-Processing:
-                      Output Guardrails -> Cost Tracking ->
-                      Budget Update -> Cache Store -> Log
-                          |
-Client <-------------- Response
-```
-
-## Tech Stack
-
-- **Runtime**: Node.js + TypeScript + Fastify v5
-- **Database**: SQLite (better-sqlite3) — zero external dependencies
-- **Embeddings**: Local all-MiniLM-L6-v2 (optional, for semantic cache)
-- **Admin UI**: Preact + Vite
-- **Deployment**: Single Docker container
-
-## Custom Guardrail Plugins
-
-Create a `.js` file in the `plugins/` directory:
-
-```javascript
-export default {
-  name: 'my-guardrail',
-  checkInput(text) {
-    // Return { passed: true/false, guardrail: 'name', message: '...' }
-    if (text.includes('forbidden')) {
-      return { passed: false, guardrail: 'my-guardrail', message: 'Forbidden content' };
-    }
-    return { passed: true, guardrail: 'my-guardrail' };
-  },
-  checkOutput(text) {
-    return { passed: true, guardrail: 'my-guardrail' };
-  },
-};
-```
+Node.js + TypeScript + Fastify v5 · SQLite (better-sqlite3) · Preact + Vite admin UI · single Docker container.
 
 ## License
 
