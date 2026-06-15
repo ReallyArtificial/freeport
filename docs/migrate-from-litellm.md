@@ -33,16 +33,26 @@ honest about where LiteLLM still wins.
 
 **Stay on (or keep) LiteLLM if you need:**
 
-- **Breadth of providers/models.** LiteLLM supports 2,600+ models across a very
-  long list of providers. **Freeport supports three provider types today: OpenAI,
-  Anthropic, and Google Gemini.** If you route to Bedrock, Azure OpenAI, Cohere,
-  Mistral, Together, Ollama, etc., Freeport does not cover those yet — this is the
-  single biggest reason not to migrate.
+- **Curated breadth of providers/models.** LiteLLM ships 2,600+ models across a
+  very long list of first-class integrations (with presets, pricing, and model
+  lists baked in). Freeport has **three native adapters — OpenAI, Anthropic, and
+  Google Gemini** — plus a config-driven **`openai-compatible`** provider that
+  reaches any OpenAI-wire backend (Azure OpenAI, Groq, Together, OpenRouter,
+  Mistral, DeepSeek, Fireworks, Ollama, vLLM, …) once you supply its `apiBase` +
+  auth. So the *reachable* surface is large, but you configure the endpoint
+  yourself — there are no curated per-vendor presets/pricing like LiteLLM's.
+- **Modalities beyond chat + embeddings.** Freeport does not yet have image
+  generation, audio/transcription, rerank, or batch endpoints. Embeddings work
+  for OpenAI and `openai-compatible` providers only.
 - A mature Python SDK / `litellm` library embedded directly in your app (Freeport
   is a gateway you call over HTTP, not an in-process library).
 
-If your traffic is OpenAI + Anthropic + Gemini and you care about self-hosted
-compliance controls, Freeport is a clean fit. Otherwise, weigh the provider gap first.
+If your traffic is OpenAI / Anthropic / Gemini (or any OpenAI-compatible endpoint)
+and you want self-hosted compliance controls, Freeport is a clean fit — including
+full **tool/function-calling, vision, JSON mode, and streaming** across all
+providers, and an **Anthropic `/v1/messages` ingress** so the Claude SDK / Claude
+Code can point at it directly. Otherwise, weigh the curated-breadth and
+extra-modality gaps first.
 
 ---
 

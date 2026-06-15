@@ -1,11 +1,11 @@
 import { getDb } from '../db/connection.js';
-import type { ProviderConfig } from '../config/types.js';
+import type { ProviderConfig, ProviderType } from '../config/types.js';
 import { encrypt, decrypt, isEncryptionReady } from '../crypto/encryption.js';
 
 export interface DbProvider {
   id: string;
   name: string;
-  type: 'openai' | 'anthropic' | 'google';
+  type: ProviderType;
   api_base: string | null;
   api_key: string;
   models: string | null; // JSON array
@@ -17,7 +17,7 @@ export interface DbProvider {
 
 export interface CreateProviderInput {
   name: string;
-  type: 'openai' | 'anthropic' | 'google';
+  type: ProviderType;
   apiBase?: string;
   apiKey: string;
   models?: string[];
@@ -26,7 +26,7 @@ export interface CreateProviderInput {
 
 export interface UpdateProviderInput {
   name?: string;
-  type?: 'openai' | 'anthropic' | 'google';
+  type?: ProviderType;
   apiBase?: string | null;
   apiKey?: string;
   models?: string[];

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import type { FreeportConfig } from './config/types.js';
 import type { ProviderRegistry } from './providers/registry.js';
 import { createProxyHandler } from './proxy/handler.js';
+import { createMessagesHandler } from './proxy/anthropic-ingress.js';
+import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { getLogger } from './logging/logger.js';
 import { formatMetrics } from './observability/metrics.js';
@@ -72,7 +74,7 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
-      version: '1.0.1',
+      version: '1.1.0',
     };
   });
 
@@ -90,13 +92,18 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/v1/')) return;
     const authHeader = request.headers.authorization;
-    if (!authHeader) {
+    // Anthropic SDK / Claude Code authenticate with `x-api-key` and send no
+    // Authorization header — accept it so /v1/messages works as a drop-in.
+    const apiKeyHeader = request.headers['x-api-key'];
+    const token = authHeader
+      ? (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader)
+      : (typeof apiKeyHeader === 'string' ? apiKeyHeader : undefined);
+    if (!token) {
       if (!proxyApiKey) return; // No auth configured, allow through
       return reply.status(401).send({
-        error: { message: 'Missing Authorization header. Use: Authorization: Bearer <API_KEY>', type: 'auth_error' },
+        error: { message: 'Missing API key. Use Authorization: Bearer <key> or x-api-key: <key>', type: 'auth_error' },
       });
     }
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
     // Check for fport_ database keys first
     if (token.startsWith('fport_')) {
@@ -145,7 +152,21 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
   app.post('/v1/chat/completions', proxyHandler);
   app.post('/v1/completions', proxyHandler);
 
-  // Embeddings passthrough
+  // Anthropic Messages-format ingress (Claude SDK / Claude Code drop-in).
+  // Translates to canonical and back; the full pipeline still applies.
+  const messagesHandler = createMessagesHandler(config, registry);
+  app.post('/v1/messages', messagesHandler);
+
+  // count_tokens is not parity-critical — documented 501 stub.
+  app.post('/v1/messages/count_tokens', async (_request, reply) => {
+    return reply.status(501).send({
+      type: 'error',
+      error: { type: 'not_implemented', message: '/v1/messages/count_tokens is not yet implemented' },
+    });
+  });
+
+  // Provider-aware embeddings. Resolves the provider+key for the requested model
+  // via the registry/key-balancer, then uses that provider's apiBase + auth style.
   app.post('/v1/embeddings', async (request, reply) => {
     const body = request.body as Record<string, unknown>;
     const model = body.model as string ?? 'text-embedding-3-small';
@@ -155,20 +176,43 @@ export async function createServer(config: FreeportConfig, registry: ProviderReg
       return reply.status(400).send({ error: { message: 'No provider found for embedding model' } });
     }
 
+    // Embeddings use the OpenAI wire format. Only openai / openai-compatible
+    // providers expose it; anthropic/google have no OpenAI-format embeddings.
+    if (match.config.type !== 'openai' && match.config.type !== 'openai-compatible') {
+      return reply.status(400).send({
+        error: {
+          message: `Provider "${match.provider.name}" (type ${match.config.type}) does not support OpenAI-format embeddings`,
+          type: 'invalid_request_error',
+        },
+      });
+    }
+
     const balancer = (await import('./routing/loadbalancer.js')).getOrCreateBalancer(
       match.provider.name,
       match.config.keys,
     );
-
     const apiKey = balancer.nextKey();
-    const apiBase = match.config.apiBase ?? 'https://api.openai.com';
 
-    const res = await fetch(`${apiBase}/v1/embeddings`, {
+    // Build URL + headers using the provider's auth style where available.
+    const apiBase = (match.config.apiBase ?? 'https://api.openai.com').replace(/\/$/, '');
+    const embeddingsPath = match.config.embeddingsPath ?? '/v1/embeddings';
+    let url = `${apiBase}${embeddingsPath}`;
+    let headers: Record<string, string>;
+
+    if (match.provider instanceof OpenAICompatibleProvider) {
+      headers = match.provider.buildHeaders(apiKey);
+      if (match.config.authStyle === 'query') {
+        const name = match.config.authQueryName ?? 'api-key';
+        const sep = url.includes('?') ? '&' : '?';
+        url += `${sep}${encodeURIComponent(name)}=${encodeURIComponent(apiKey)}`;
+      }
+    } else {
+      headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+    }
+
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify(body),
     });
 

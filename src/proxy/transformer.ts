@@ -1,4 +1,5 @@
 import type { CompletionRequest, ChatMessage } from '../providers/base.js';
+import { getMessageText } from '../providers/base.js';
 
 /**
  * Normalize incoming request body to our internal CompletionRequest format.
@@ -59,7 +60,7 @@ export function normalizeRequest(body: Record<string, unknown>): CompletionReque
 /** Extract the prompt text from messages for caching/guardrails */
 export function extractPromptText(messages: ChatMessage[]): string {
   return messages
-    .map(m => `${m.role}: ${m.content}`)
+    .map(m => `${m.role}: ${getMessageText(m)}`)
     .join('\n');
 }
 

@@ -3,13 +3,25 @@ export interface ProviderKeyConfig {
   weight?: number;
 }
 
+export type ProviderType = 'openai' | 'anthropic' | 'google' | 'openai-compatible';
+
+export type AuthStyle = 'bearer' | 'header' | 'query' | 'none';
+
 export interface ProviderConfig {
   name: string;
-  type: 'openai' | 'anthropic' | 'google';
+  type: ProviderType;
   apiBase?: string;
   keys: ProviderKeyConfig[];
   models?: string[];
   enabled?: boolean;
+  // openai-compatible options
+  authStyle?: AuthStyle;
+  authHeaderName?: string;
+  authQueryName?: string;
+  headers?: Record<string, string>;
+  chatPath?: string;
+  modelsPath?: string;
+  embeddingsPath?: string;
 }
 
 export interface FallbackChainConfig {

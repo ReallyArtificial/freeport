@@ -2,8 +2,9 @@
 
 **The open-source LLM gateway you run yourself.** A self-hosted, OpenAI-API-compatible gateway that sits between your app and the model providers — adding multi-provider routing, fallback, semantic caching, cost/budget caps, PII guardrails, audit logging and encrypted keys. Your prompts never leave your infrastructure.
 
-- 🔌 **Drop-in OpenAI API** — point any OpenAI SDK at it, keep your code
-- 🔀 **Multi-provider** — OpenAI, Anthropic, Google Gemini behind one API, with fallback + circuit breaker
+- 🔌 **Drop-in OpenAI *and* Anthropic API** — point any OpenAI SDK at `/v1`, or the Claude SDK / Claude Code at `/v1/messages`
+- 🔀 **Multi-provider** — OpenAI, Anthropic, Google Gemini natively, plus any OpenAI-compatible endpoint (Azure, Groq, Together, OpenRouter, Mistral, DeepSeek, Ollama, vLLM…), with fallback + circuit breaker
+- 🛠️ **Full fidelity** — tool/function-calling, vision, JSON mode and streaming work across all providers (not just OpenAI)
 - 🛡️ **Compliance-grade** — PII redaction, audit logs, budget caps, AES-256-GCM encrypted keys
 - 🏠 **Self-hosted** — a single process / container, SQLite-backed, no external dependencies
 - 📊 **Built-in admin UI** — add providers, set budgets, inspect logs at `/ui/`
@@ -64,7 +65,7 @@ const resp = await client.chat.completions.create({
 });
 ```
 
-Streaming works identically — set `stream: true`. Requests are accepted in the OpenAI format; Anthropic and Google are supported as upstream providers (freeport translates for you).
+Streaming works identically — set `stream: true`. Tool/function-calling and vision (image inputs) are translated faithfully to each provider. You can also send **Anthropic Messages-format** requests to `POST /v1/messages` (point the Claude SDK or Claude Code at freeport with `x-api-key`) — freeport translates between formats and providers for you.
 
 ## Configure providers
 
@@ -114,7 +115,9 @@ rateLimit: { enabled: true, requestsPerMinute: 60 }
 
 ## Features
 
-- **Multi-provider routing** — OpenAI, Anthropic, Google Gemini through one OpenAI-compatible API.
+- **Multi-provider routing** — OpenAI, Anthropic, Google Gemini natively, plus a config-driven `openai-compatible` provider for any OpenAI-wire backend (Azure OpenAI, Groq, Together, OpenRouter, Mistral, DeepSeek, Fireworks, Ollama, vLLM) — set its `apiBase` + auth.
+- **Full request fidelity** — tools/function-calling, multimodal vision, and `response_format` (JSON mode) are translated across all providers, not dropped.
+- **Dual ingress** — accepts OpenAI format (`/v1/chat/completions`) and Anthropic Messages format (`/v1/messages`, streaming included).
 - **Fallback chains + circuit breaker** — automatic failover when a provider is down.
 - **Semantic cache** — similar prompts return cached responses using local embeddings (all-MiniLM-L6-v2); no external calls.
 - **Cost tracking & budgets** — per-project spend tracking with daily/monthly caps and a kill switch.
@@ -128,7 +131,7 @@ rateLimit: { enabled: true, requestsPerMinute: 60 }
 
 ## API endpoints
 
-**Proxy (OpenAI-compatible):** `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`
+**Proxy:** `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings` (OpenAI / openai-compatible providers), `GET /v1/models`, and `POST /v1/messages` (Anthropic Messages format)
 
 **Admin API:** `/api/providers`, `/api/prompts`, `/api/projects`, `/api/budgets/:projectId` (+ `/kill`), `/api/logs` (+ `/stats`), `/api/ab-tests`, `/api/system/status`, `GET /health`, `GET /metrics`
 

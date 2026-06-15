@@ -40,7 +40,7 @@ describe('Server', () => {
 
     const body = response.json();
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('1.0.1');
+    expect(body.version).toBe('1.1.0');
   });
 
   it('lists models', async () => {

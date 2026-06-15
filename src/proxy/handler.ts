@@ -1,15 +1,224 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import type { FreeportConfig, FallbackChainConfig } from '../config/types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import type { CompletionRequest, CompletionResponse } from '../providers/base.js';
-import { normalizeRequest, extractFreeportMetadata, extractPromptText } from './transformer.js';
+import type {
+  ChatMessage,
+  CompletionResponse,
+  StreamingProviderResponse,
+} from '../providers/base.js';
+import { getMessageText } from '../providers/base.js';
+import { normalizeRequest, extractFreeportMetadata } from './transformer.js';
 import { preProcess, postProcess, type PipelineContext } from './pipeline.js';
 import { pipeStream } from './streaming.js';
 import { executeWithFallback, executeWithFallbackStream } from '../routing/fallback.js';
-import { getOrCreateBalancer } from '../routing/loadbalancer.js';
-import { getActiveTests, selectVariant, recordABResult } from '../routing/ab-router.js';
+import { recordABResult, getActiveTests, selectVariant } from '../routing/ab-router.js';
 import { getLogger } from '../logging/logger.js';
 import { incCounter, observeHistogram, incGauge, decGauge } from '../observability/metrics.js';
+
+/**
+ * Result of running the proxy core. Either a fully-formed (cache or provider)
+ * response, or a streaming handle plus a `finalize(fullContent)` callback that
+ * runs post-processing once the stream has been drained.
+ */
+export type RunCompletionResult =
+  | {
+      kind: 'response';
+      response: CompletionResponse;
+      cacheHeaders?: Record<string, string>;
+    }
+  | {
+      kind: 'stream';
+      streamResponse: StreamingProviderResponse;
+      finalize: (fullContent: string) => Promise<void>;
+      isFallback: boolean;
+    };
+
+/**
+ * Shared proxy core: runs the full pipeline (A/B routing, pre-process, cache,
+ * routing/fallback, post-process) WITHOUT touching the Fastify reply. Both the
+ * OpenAI-format handler and the Anthropic-format /v1/messages ingress call this.
+ *
+ * `body` is the raw client body (OpenAI-shaped). `extraMetadata` lets a caller
+ * (e.g. the Anthropic ingress) attach project context derived from auth.
+ */
+export async function runCompletion(
+  body: Record<string, unknown>,
+  registry: ProviderRegistry,
+  config: FreeportConfig,
+  startTime: number,
+  freeportCtx?: { projectId?: string; apiKeyId?: string },
+): Promise<RunCompletionResult> {
+  const log = getLogger();
+
+  // Parse and normalize the request
+  const completionReq = normalizeRequest(body);
+  const metadata = extractFreeportMetadata(body);
+
+  // Build pipeline context
+  const context: PipelineContext = {
+    request: completionReq,
+    projectId: metadata.projectId || freeportCtx?.projectId,
+    apiKeyId: freeportCtx?.apiKeyId,
+    promptSlug: metadata.promptSlug,
+    promptVersion: metadata.promptVersion,
+    promptVariables: metadata.promptVariables,
+    cacheControl: metadata.cacheControl,
+    abTestId: metadata.abTestId,
+    config,
+  };
+
+  // A/B test routing
+  let abVariant: ReturnType<typeof selectVariant> = null;
+  if (config.abTesting?.enabled && metadata.abTestId) {
+    const tests = getActiveTests();
+    const test = tests.find(t => t.id === metadata.abTestId || t.name === metadata.abTestId);
+    if (test) {
+      abVariant = selectVariant(test);
+      if (abVariant) {
+        if (abVariant.model) completionReq.model = abVariant.model;
+      }
+    }
+  }
+
+  // Run pre-processing pipeline
+  const preResult = await preProcess(context);
+
+  // Cache hit? Return immediately
+  if (preResult.cacheHit) {
+    const cached = preResult.cacheHit;
+    const cachedResponse: CompletionResponse = {
+      id: `chatcmpl-cached-${cached.id}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: completionReq.model,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: cached.responseText },
+        finish_reason: 'stop',
+      }],
+      usage: {
+        prompt_tokens: cached.inputTokens,
+        completion_tokens: cached.outputTokens,
+        total_tokens: cached.inputTokens + cached.outputTokens,
+      },
+    };
+
+    const latencyMs = Math.round(performance.now() - startTime);
+
+    await postProcess({
+      context,
+      provider: 'cache',
+      model: completionReq.model,
+      responseText: cached.responseText,
+      inputTokens: cached.inputTokens,
+      outputTokens: cached.outputTokens,
+      latencyMs,
+      isCached: true,
+      isFallback: false,
+    });
+
+    incCounter('freeport_cache_hits_total');
+    incCounter('freeport_requests_total', { provider: 'cache', model: completionReq.model, status: '200' });
+    return {
+      kind: 'response',
+      response: cachedResponse,
+      cacheHeaders: { 'X-Cache': 'HIT', 'X-Cache-Similarity': String(cached.similarity) },
+    };
+  }
+
+  // Snapshot the resolved request for logging
+  const resolvedRequestBody = JSON.stringify({
+    model: completionReq.model,
+    messages: completionReq.messages,
+    ...(completionReq.temperature !== undefined && { temperature: completionReq.temperature }),
+    ...(completionReq.max_tokens !== undefined && { max_tokens: completionReq.max_tokens }),
+    ...(completionReq.stream && { stream: completionReq.stream }),
+  });
+
+  const isStreaming = completionReq.stream === true;
+  const chain = findChain(completionReq.model, config, registry);
+
+  if (isStreaming) {
+    const streamResponse = await executeWithFallbackStream(completionReq, chain, registry);
+
+    const finalize = async (fullContent: string) => {
+      const latencyMs = Math.round(performance.now() - startTime);
+      try {
+        await postProcess({
+          context,
+          provider: streamResponse.provider,
+          model: streamResponse.model,
+          responseText: fullContent,
+          inputTokens: estimateTokensQuick(completionReq.messages),
+          outputTokens: estimateTokensQuick([{ role: 'assistant', content: fullContent }]),
+          latencyMs,
+          isCached: false,
+          isFallback: chain.providers.length > 1,
+          rawRequestBody: resolvedRequestBody,
+          rawResponseBody: fullContent,
+        });
+      } catch (err) {
+        log.error({ err }, 'Post-process failed for streaming request');
+      }
+
+      if (abVariant) {
+        recordABResult({
+          testId: abVariant.testId,
+          variantId: abVariant.id,
+          latencyMs,
+          cost: 0,
+        });
+      }
+
+      incCounter('freeport_requests_total', { provider: streamResponse.provider, model: streamResponse.model, status: '200' });
+      observeHistogram('freeport_request_duration_seconds', { provider: streamResponse.provider, model: streamResponse.model }, latencyMs / 1000);
+      incCounter('freeport_cache_misses_total');
+    };
+
+    return { kind: 'stream', streamResponse, finalize, isFallback: chain.providers.length > 1 };
+  }
+
+  // Non-streaming path
+  const providerResponse = await executeWithFallback(completionReq, chain, registry);
+  const latencyMs = Math.round(performance.now() - startTime);
+  const response = providerResponse.response;
+
+  // Tool-only responses have content:null — flatten to '' for logging.
+  const responseMsg = response.choices[0]?.message;
+  const responseText = responseMsg ? getMessageText(responseMsg) : '';
+
+  await postProcess({
+    context,
+    provider: providerResponse.provider,
+    model: response.model,
+    responseText,
+    inputTokens: response.usage?.prompt_tokens ?? 0,
+    outputTokens: response.usage?.completion_tokens ?? 0,
+    latencyMs,
+    isCached: false,
+    isFallback: chain.providers.length > 1,
+    rawRequestBody: JSON.stringify(body),
+    rawResponseBody: providerResponse.rawBody,
+  });
+
+  if (abVariant) {
+    recordABResult({
+      testId: abVariant.testId,
+      variantId: abVariant.id,
+      latencyMs,
+      inputTokens: response.usage?.prompt_tokens,
+      outputTokens: response.usage?.completion_tokens,
+    });
+  }
+
+  incCounter('freeport_requests_total', { provider: providerResponse.provider, model: response.model, status: '200' });
+  observeHistogram('freeport_request_duration_seconds', { provider: providerResponse.provider, model: response.model }, latencyMs / 1000);
+  incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'input' }, response.usage?.prompt_tokens ?? 0);
+  incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'output' }, response.usage?.completion_tokens ?? 0);
+  incCounter('freeport_cache_misses_total');
+
+  return { kind: 'response', response, cacheHeaders: { 'X-Cache': 'MISS' } };
+}
 
 export function createProxyHandler(config: FreeportConfig, registry: ProviderRegistry) {
   const log = getLogger();
@@ -18,184 +227,25 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
     const startTime = performance.now();
     const body = request.body as Record<string, unknown>;
 
+    const freeportCtx = (request as any).freeportContext as
+      { projectId?: string; apiKeyId?: string } | undefined;
+
     incGauge('freeport_active_requests');
     try {
-      // Parse and normalize the request
-      const completionReq = normalizeRequest(body);
-      const metadata = extractFreeportMetadata(body);
+      const result = await runCompletion(body, registry, config, startTime, freeportCtx);
 
-      // Read freeport context from API key auth (if present)
-      const freeportCtx = (request as any).freeportContext as
-        { projectId?: string; apiKeyId?: string } | undefined;
-
-      // Build pipeline context
-      const context: PipelineContext = {
-        request: completionReq,
-        projectId: metadata.projectId || freeportCtx?.projectId,
-        promptSlug: metadata.promptSlug,
-        promptVersion: metadata.promptVersion,
-        promptVariables: metadata.promptVariables,
-        cacheControl: metadata.cacheControl,
-        abTestId: metadata.abTestId,
-        config,
-      };
-
-      // A/B test routing
-      let abVariant: ReturnType<typeof selectVariant> = null;
-      if (config.abTesting?.enabled && metadata.abTestId) {
-        const tests = getActiveTests();
-        const test = tests.find(t => t.id === metadata.abTestId || t.name === metadata.abTestId);
-        if (test) {
-          abVariant = selectVariant(test);
-          if (abVariant) {
-            if (abVariant.model) completionReq.model = abVariant.model;
-          }
-        }
-      }
-
-      // Run pre-processing pipeline
-      const preResult = await preProcess(context);
-
-      // Cache hit? Return immediately
-      if (preResult.cacheHit) {
-        const cached = preResult.cacheHit;
-        const cachedResponse: CompletionResponse = {
-          id: `chatcmpl-cached-${cached.id}`,
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: completionReq.model,
-          choices: [{
-            index: 0,
-            message: { role: 'assistant', content: cached.responseText },
-            finish_reason: 'stop',
-          }],
-          usage: {
-            prompt_tokens: cached.inputTokens,
-            completion_tokens: cached.outputTokens,
-            total_tokens: cached.inputTokens + cached.outputTokens,
-          },
-        };
-
-        const latencyMs = Math.round(performance.now() - startTime);
-
-        // Post-process (logging, etc.)
-        await postProcess({
-          context,
-          provider: 'cache',
-          model: completionReq.model,
-          responseText: cached.responseText,
-          inputTokens: cached.inputTokens,
-          outputTokens: cached.outputTokens,
-          latencyMs,
-          isCached: true,
-          isFallback: false,
-        });
-
-        incCounter('freeport_cache_hits_total');
-        incCounter('freeport_requests_total', { provider: 'cache', model: completionReq.model, status: '200' });
-        decGauge('freeport_active_requests');
-        return reply.header('X-Cache', 'HIT').header('X-Cache-Similarity', String(cached.similarity)).send(cachedResponse);
-      }
-
-      // Snapshot the resolved request for logging (after prompt resolution, guardrails, etc.)
-      const resolvedRequestBody = JSON.stringify({
-        model: completionReq.model,
-        messages: completionReq.messages,
-        ...(completionReq.temperature !== undefined && { temperature: completionReq.temperature }),
-        ...(completionReq.max_tokens !== undefined && { max_tokens: completionReq.max_tokens }),
-        ...(completionReq.stream && { stream: completionReq.stream }),
-      });
-
-      // Route to provider
-      const isStreaming = completionReq.stream === true;
-
-      // Find the appropriate fallback chain or direct provider
-      const chain = findChain(completionReq.model, config, registry);
-
-      if (isStreaming) {
-        // Streaming path
-        const streamResponse = await executeWithFallbackStream(
-          completionReq, chain, registry,
-        );
-
-        const { fullContent, chunks } = await pipeStream(streamResponse, reply);
-        const latencyMs = Math.round(performance.now() - startTime);
-
-        // Post-process — stream is already sent, but we still await to ensure
-        // logging, caching, and budget tracking complete before the handler exits
-        try {
-          await postProcess({
-            context,
-            provider: streamResponse.provider,
-            model: streamResponse.model,
-            responseText: fullContent,
-            inputTokens: estimateTokensQuick(completionReq.messages),
-            outputTokens: estimateTokensQuick([{ role: 'assistant', content: fullContent }]),
-            latencyMs,
-            isCached: false,
-            isFallback: chain.providers.length > 1,
-            rawRequestBody: resolvedRequestBody,
-            rawResponseBody: fullContent,
-          });
-        } catch (err) {
-          log.error({ err }, 'Post-process failed for streaming request');
-        }
-
-        // Record A/B test result
-        if (abVariant) {
-          recordABResult({
-            testId: abVariant.testId,
-            variantId: abVariant.id,
-            latencyMs,
-            cost: 0, // Will be calculated in post-process
-          });
-        }
-
-        incCounter('freeport_requests_total', { provider: streamResponse.provider, model: streamResponse.model, status: '200' });
-        observeHistogram('freeport_request_duration_seconds', { provider: streamResponse.provider, model: streamResponse.model }, latencyMs / 1000);
-        incCounter('freeport_cache_misses_total');
+      if (result.kind === 'stream') {
+        const { fullContent } = await pipeStream(result.streamResponse, reply);
+        await result.finalize(fullContent);
         decGauge('freeport_active_requests');
         return; // Already sent via pipeStream
       }
 
-      // Non-streaming path
-      const providerResponse = await executeWithFallback(completionReq, chain, registry);
-      const latencyMs = Math.round(performance.now() - startTime);
-      const response = providerResponse.response;
-
-      // Post-process
-      await postProcess({
-        context,
-        provider: providerResponse.provider,
-        model: response.model,
-        responseText: response.choices[0]?.message?.content ?? '',
-        inputTokens: response.usage?.prompt_tokens ?? 0,
-        outputTokens: response.usage?.completion_tokens ?? 0,
-        latencyMs,
-        isCached: false,
-        isFallback: chain.providers.length > 1,
-        rawRequestBody: JSON.stringify(body),
-        rawResponseBody: providerResponse.rawBody,
-      });
-
-      // Record A/B test result
-      if (abVariant) {
-        recordABResult({
-          testId: abVariant.testId,
-          variantId: abVariant.id,
-          latencyMs,
-          inputTokens: response.usage?.prompt_tokens,
-          outputTokens: response.usage?.completion_tokens,
-        });
-      }
-
-      incCounter('freeport_requests_total', { provider: providerResponse.provider, model: response.model, status: '200' });
-      observeHistogram('freeport_request_duration_seconds', { provider: providerResponse.provider, model: response.model }, latencyMs / 1000);
-      incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'input' }, response.usage?.prompt_tokens ?? 0);
-      incCounter('freeport_tokens_total', { provider: providerResponse.provider, model: response.model, type: 'output' }, response.usage?.completion_tokens ?? 0);
-      incCounter('freeport_cache_misses_total');
       decGauge('freeport_active_requests');
-      return reply.header('X-Cache', 'MISS').send(response);
+      if (result.cacheHeaders) {
+        for (const [k, v] of Object.entries(result.cacheHeaders)) reply.header(k, v);
+      }
+      return reply.send(result.response);
     } catch (err: unknown) {
       const latencyMs = Math.round(performance.now() - startTime);
       const error = err as Error & { statusCode?: number; code?: string };
@@ -225,7 +275,7 @@ export function createProxyHandler(config: FreeportConfig, registry: ProviderReg
 }
 
 /** Build a fallback chain for the given model */
-function findChain(
+export function findChain(
   model: string,
   config: FreeportConfig,
   registry: ProviderRegistry,
@@ -287,10 +337,10 @@ function findChain(
   };
 }
 
-function estimateTokensQuick(messages: Array<{ role: string; content: string }>): number {
+function estimateTokensQuick(messages: ChatMessage[]): number {
   let total = 0;
   for (const msg of messages) {
-    total += 4 + Math.ceil((msg.content?.length ?? 0) / 4);
+    total += 4 + Math.ceil(getMessageText(msg).length / 4);
   }
   return total + 3;
 }

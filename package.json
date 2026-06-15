@@ -1,6 +1,6 @@
 {
   "name": "@reallyartificial/freeport",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Open-source, self-hosted, OpenAI-compatible LLM gateway — multi-provider routing, fallback, semantic cache, budget caps, PII guardrails, audit logs",
   "type": "module",
   "main": "dist/index.js",

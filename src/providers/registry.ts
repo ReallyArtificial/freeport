@@ -3,6 +3,7 @@ import type { ProviderConfig } from '../config/types.js';
 import { OpenAIProvider } from './openai.js';
 import { AnthropicProvider } from './anthropic.js';
 import { GoogleProvider } from './google.js';
+import { OpenAICompatibleProvider } from './openai-compatible.js';
 
 export class ProviderRegistry {
   private providers = new Map<string, LLMProvider>();
@@ -21,6 +22,21 @@ export class ProviderRegistry {
         break;
       case 'google':
         provider = new GoogleProvider(config.name, config.apiBase);
+        break;
+      case 'openai-compatible':
+        if (!config.apiBase) {
+          throw new Error(`openai-compatible provider "${config.name}" requires apiBase`);
+        }
+        provider = new OpenAICompatibleProvider({
+          name: config.name,
+          apiBase: config.apiBase,
+          authStyle: config.authStyle,
+          authHeaderName: config.authHeaderName,
+          authQueryName: config.authQueryName,
+          headers: config.headers,
+          chatPath: config.chatPath,
+          modelsPath: config.modelsPath,
+        });
         break;
       default:
         throw new Error(`Unknown provider type: ${config.type}`);

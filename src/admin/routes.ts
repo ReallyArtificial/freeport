@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { FreeportConfig } from '../config/types.js';
+import type { FreeportConfig, ProviderType } from '../config/types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { createAdminAuth } from './auth.js';
 import * as promptManager from '../prompts/manager.js';
@@ -290,7 +290,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
   app.post<{
     Body: {
       name: string;
-      type: 'openai' | 'anthropic' | 'google';
+      type: ProviderType;
       apiBase?: string;
       apiKey: string;
       models?: string[];
@@ -301,8 +301,8 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     if (!name || !type || !apiKey) {
       return reply.status(400).send({ error: { message: 'name, type, and apiKey are required' } });
     }
-    if (!['openai', 'anthropic', 'google'].includes(type)) {
-      return reply.status(400).send({ error: { message: 'type must be openai, anthropic, or google' } });
+    if (!['openai', 'anthropic', 'google', 'openai-compatible'].includes(type)) {
+      return reply.status(400).send({ error: { message: 'type must be openai, anthropic, google, or openai-compatible' } });
     }
     try {
       const provider = createDbProvider({ name, type, apiBase, apiKey, models, enabled });
@@ -327,7 +327,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
     Params: { id: string };
     Body: {
       name?: string;
-      type?: 'openai' | 'anthropic' | 'google';
+      type?: ProviderType;
       apiBase?: string | null;
       apiKey?: string;
       models?: string[];
@@ -701,7 +701,7 @@ export function registerAdminRoutes(app: FastifyInstance, config: FreeportConfig
 
     return {
       status: 'ok',
-      version: '1.0.1',
+      version: '1.1.0',
       providers: allProviders,
       totalLogs: logCount.count,
       cacheEntries: cacheCount.count,

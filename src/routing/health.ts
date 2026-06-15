@@ -1,4 +1,5 @@
 import { getLogger } from '../logging/logger.js';
+import type { ProviderType } from '../config/types.js';
 
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
@@ -12,7 +13,7 @@ export interface ProviderHealth {
 
 interface ProviderCheckConfig {
   name: string;
-  type: 'openai' | 'anthropic' | 'google';
+  type: ProviderType;
   apiBase?: string;
   apiKey: string;
 }
@@ -29,7 +30,7 @@ async function checkProvider(config: ProviderCheckConfig): Promise<ProviderHealt
   try {
     let res: Response;
 
-    if (config.type === 'openai') {
+    if (config.type === 'openai' || config.type === 'openai-compatible') {
       const base = config.apiBase || 'https://api.openai.com';
       res = await fetch(`${base}/v1/models`, {
         headers: { 'Authorization': `Bearer ${config.apiKey}` },
